@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import timedelta
 import logging
 import re
 import threading
@@ -6,9 +6,7 @@ from decimal import Decimal
 from typing import Optional
 
 import pandas as pd
-import requests
 from scipy.stats import pearsonr
-from django.conf import settings
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
@@ -33,91 +31,14 @@ from Dashboard.models import (
     SyncRun,
 )
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
+from loginFacebook.services import (
+    MetaTokenExchangeError,
+    exchange_short_token_for_long_token,
+)
 
 
 logger = logging.getLogger(__name__)
 OWNER_RE = re.compile(r'user_id=(\d+)')
-PREVENTIVE_RENEWAL_DAYS = 50
-
-
-def _meta_error_message(payload, fallback: str) -> str:
-    if isinstance(payload, dict):
-        error = payload.get('error')
-        if isinstance(error, dict) and error.get('message'):
-            return str(error['message'])
-    return fallback
-
-
-def _parse_positive_int(value) -> Optional[int]:
-    if value in (None, ''):
-        return None
-    if isinstance(value, bool):
-        return None
-    try:
-        parsed = int(float(str(value).strip()))
-    except (TypeError, ValueError):
-        return None
-    if parsed <= 0:
-        return None
-    return parsed
-
-
-def _meta_expired_at_from_payload(payload) -> Optional[datetime]:
-    if not isinstance(payload, dict):
-        return None
-
-    expires_in = _parse_positive_int(payload.get('expires_in'))
-    if expires_in is not None:
-        return timezone.now() + timedelta(seconds=expires_in)
-
-    expires_at = _parse_positive_int(payload.get('expires_at'))
-    if expires_at is not None:
-        return datetime.fromtimestamp(expires_at, tz=dt_timezone.utc)
-
-    return None
-
-
-def _meta_fetch_expired_at_with_debug_token(
-    *,
-    graph_version: str,
-    app_id: str,
-    app_secret: str,
-    input_token: str,
-) -> Optional[datetime]:
-    if not app_id or not app_secret or not input_token:
-        return None
-
-    url = f'https://graph.facebook.com/{graph_version}/debug_token'
-    params = {
-        'input_token': input_token,
-        'access_token': f'{app_id}|{app_secret}',
-    }
-    try:
-        response = requests.get(url, params=params, timeout=30)
-    except requests.RequestException:
-        return None
-
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {}
-
-    if response.status_code >= 400:
-        return None
-
-    data = payload.get('data') if isinstance(payload, dict) else None
-    if not isinstance(data, dict):
-        return None
-
-    expires_at = _parse_positive_int(data.get('expires_at'))
-    if expires_at is None:
-        return None
-    return datetime.fromtimestamp(expires_at, tz=dt_timezone.utc)
-
-
-def _meta_preventive_expired_at() -> datetime:
-    # When Meta does not return expiration metadata, force a preventive renewal window.
-    return timezone.now() + timedelta(days=PREVENTIVE_RENEWAL_DAYS)
 
 
 def _run_sync_in_background(
@@ -164,65 +85,19 @@ def meta_connect(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    app_id = str(getattr(settings, 'META_APP_ID', '') or '').strip()
-    app_secret = str(getattr(settings, 'META_APP_SECRET', '') or '').strip()
-    graph_version = str(getattr(settings, 'META_GRAPH_VERSION', 'v22.0') or 'v22.0').strip('/')
-
-    if not app_id or not app_secret:
-        return Response(
-            {'detail': 'META_APP_ID e META_APP_SECRET precisam estar configurados no backend.'},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
-    url = f'https://graph.facebook.com/{graph_version}/oauth/access_token'
-    params = {
-        'grant_type': 'fb_exchange_token',
-        'client_id': app_id,
-        'client_secret': app_secret,
-        'fb_exchange_token': short_token,
-    }
-
     try:
-        response = requests.get(url, params=params, timeout=30)
-    except requests.RequestException as exc:
-        return Response(
-            {'detail': f'Falha de rede ao trocar token: {exc}'},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
+        exchange = exchange_short_token_for_long_token(short_token=short_token)
+    except MetaTokenExchangeError as exc:
+        return Response({'detail': exc.detail}, status=exc.status_code)
 
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = {}
-
-    if response.status_code >= 400:
-        message = _meta_error_message(payload, 'Falha ao trocar short token por long token.')
-        return Response(
-            {'detail': message},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    long_token = payload.get('access_token')
-    if not long_token:
-        return Response(
-            {'detail': 'Meta Graph API nao retornou access_token na troca.'},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-
-    expired_at = _meta_expired_at_from_payload(payload)
-    expiration_source = 'exchange'
-    if expired_at is None:
-        expired_at = _meta_fetch_expired_at_with_debug_token(
-            graph_version=graph_version,
-            app_id=app_id,
-            app_secret=app_secret,
-            input_token=long_token,
-        )
-        expiration_source = 'debug_token'
-    if expired_at is None:
-        expired_at = _meta_preventive_expired_at()
-        expiration_source = f'preventive_{PREVENTIVE_RENEWAL_DAYS}d'
-    print(f"[meta_connect] expiration_source={expiration_source}; expired_at={expired_at.isoformat()}")
+    long_token = exchange['long_token']
+    expired_at = exchange['expired_at']
+    expiration_source = exchange['expiration_source']
+    logger.info(
+        '[meta_connect] expiration_source=%s; expired_at=%s',
+        expiration_source,
+        expired_at.isoformat(),
+    )
 
     with transaction.atomic():
         already_linked = (

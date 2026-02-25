@@ -20,6 +20,7 @@ from django.urls import include, path
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('auth/', include('Dashboard.urls')),
+    path('api/facebook-auth/', include('loginFacebook.urls')),
     path('api/meta/', include('Dashboard.meta_urls')),
     path('api/instagram/', include('Dashboard.instagram_urls')),
     path('api/empresa/', include('empresa.urls')),
