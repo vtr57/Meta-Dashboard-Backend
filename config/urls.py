@@ -16,9 +16,26 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import include, path
+from loginFacebook import views as login_facebook_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('privacy-policy', login_facebook_views.privacy_policy, name='privacy-policy'),
+    path('privacy-policy/', login_facebook_views.privacy_policy, name='privacy-policy-slash'),
+    path('data-deletion', login_facebook_views.data_deletion, name='data-deletion'),
+    path('data-deletion/', login_facebook_views.data_deletion, name='data-deletion-slash'),
+    path('exclusao-de-dados', login_facebook_views.data_deletion, name='exclusao-de-dados'),
+    path('exclusao-de-dados/', login_facebook_views.data_deletion, name='exclusao-de-dados-slash'),
+    path(
+        'politica-de-privacidade',
+        login_facebook_views.privacy_policy,
+        name='politica-de-privacidade',
+    ),
+    path(
+        'politica-de-privacidade/',
+        login_facebook_views.privacy_policy,
+        name='politica-de-privacidade-slash',
+    ),
     path('auth/', include('Dashboard.urls')),
     path('api/facebook-auth/', include('loginFacebook.urls')),
     path('api/meta/', include('Dashboard.meta_urls')),
