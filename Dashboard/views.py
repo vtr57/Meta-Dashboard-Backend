@@ -2,6 +2,7 @@ import json
 
 from django.contrib.auth import authenticate, login, logout
 from django.http import JsonResponse
+from django.middleware.csrf import get_token
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
@@ -9,12 +10,15 @@ from django.views.decorators.http import require_GET, require_POST
 @ensure_csrf_cookie
 @require_GET
 def auth_me(request):
+    csrf_token = get_token(request)
+
     if not request.user.is_authenticated:
-        return JsonResponse({'authenticated': False, 'user': None}, status=200)
+        return JsonResponse({'authenticated': False, 'user': None, 'csrfToken': csrf_token}, status=200)
 
     return JsonResponse(
         {
             'authenticated': True,
+            'csrfToken': csrf_token,
             'user': {
                 'id': request.user.id,
                 'username': request.user.username,
