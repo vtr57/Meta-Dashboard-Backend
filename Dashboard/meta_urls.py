@@ -3,8 +3,6 @@ from django.urls import path
 from . import api_views
 
 urlpatterns = [
-    path('connect', api_views.meta_connect, name='meta-connect'),
-    path('connect/', api_views.meta_connect, name='meta-connect-slash'),
     path('connection-status', api_views.meta_connection_status, name='meta-connection-status'),
     path('connection-status/', api_views.meta_connection_status, name='meta-connection-status-slash'),
     path('filters', api_views.meta_filters, name='meta-filters'),

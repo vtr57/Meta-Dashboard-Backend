@@ -7,7 +7,6 @@ from typing import Optional
 
 import pandas as pd
 from scipy.stats import pearsonr
-from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -31,10 +30,6 @@ from Dashboard.models import (
     SyncRun,
 )
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
-from loginFacebook.services import (
-    MetaTokenExchangeError,
-    exchange_short_token_for_long_token,
-)
 
 
 logger = logging.getLogger(__name__)
@@ -71,70 +66,6 @@ def _sync_belongs_to_user(sync_run: SyncRun, user_id: int) -> bool:
     if not match:
         return True
     return int(match.group(1)) == int(user_id)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def meta_connect(request):
-    id_meta_user = str(request.data.get('id_meta_user') or '').strip()
-    short_token = str(request.data.get('short_token') or '').strip()
-
-    if not id_meta_user or not short_token:
-        return Response(
-            {'detail': 'id_meta_user e short_token sao obrigatorios.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    try:
-        exchange = exchange_short_token_for_long_token(short_token=short_token)
-    except MetaTokenExchangeError as exc:
-        return Response({'detail': exc.detail}, status=exc.status_code)
-
-    long_token = exchange['long_token']
-    expired_at = exchange['expired_at']
-    expiration_source = exchange['expiration_source']
-    logger.info(
-        '[meta_connect] expiration_source=%s; expired_at=%s',
-        expiration_source,
-        expired_at.isoformat(),
-    )
-
-    with transaction.atomic():
-        already_linked = (
-            DashboardUser.objects.select_for_update()
-            .filter(id_meta_user=id_meta_user)
-            .exclude(user=request.user)
-            .exists()
-        )
-        if already_linked:
-            return Response(
-                {'detail': 'id_meta_user ja conectado a outro usuario do sistema.'},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        dashboard_user, _ = DashboardUser.objects.select_for_update().get_or_create(
-            user=request.user,
-            defaults={
-                'id_meta_user': id_meta_user,
-                'long_access_token': long_token,
-                'expired_at': expired_at,
-            },
-        )
-        dashboard_user.id_meta_user = id_meta_user
-        dashboard_user.long_access_token = long_token
-        dashboard_user.expired_at = expired_at
-        dashboard_user.save(update_fields=['id_meta_user', 'long_access_token', 'expired_at'])
-
-    return Response(
-        {
-            'detail': 'Conexao com Meta concluida.',
-            'id_meta_user': dashboard_user.id_meta_user,
-            'expired_at': dashboard_user.expired_at,
-            'has_valid_long_token': dashboard_user.has_valid_long_token(),
-            'sync_requires_reconnect': False,
-        },
-        status=status.HTTP_200_OK,
-    )
 
 
 @api_view(['GET'])

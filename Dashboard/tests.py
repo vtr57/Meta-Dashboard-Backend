@@ -4,9 +4,8 @@ from unittest.mock import Mock, patch
 
 import requests
 from django.contrib.auth import get_user_model
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase
 from django.utils.dateparse import parse_date
-from django.utils import timezone as django_timezone
 
 from Dashboard.models import (
     Ad,
@@ -70,119 +69,15 @@ class AuthSessionCsrfTests(TestCase):
         self.assertFalse(me_after_logout.json()['authenticated'])
 
 
-@override_settings(META_APP_ID='app-id', META_APP_SECRET='app-secret', META_GRAPH_VERSION='v24.0')
 class MetaConnectEndpointTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='meta-connect-user', password='Secret123!')
         self.client = Client()
         self.client.force_login(self.user)
 
-    @patch('Dashboard.api_views.requests.get')
-    def test_meta_connect_persists_expired_at_when_expires_in_is_string(self, mocked_get):
-        mocked_response = Mock()
-        mocked_response.status_code = 200
-        mocked_response.json.return_value = {
-            'access_token': 'meta-long-token',
-            'expires_in': '5183944',
-        }
-        mocked_get.return_value = mocked_response
-
-        before = django_timezone.now()
-        response = self.client.post(
-            '/api/meta/connect',
-            data=json.dumps(
-                {
-                    'id_meta_user': 'meta-user-connect-1',
-                    'short_token': 'short-token-value',
-                }
-            ),
-            content_type='application/json',
-        )
-        after = django_timezone.now()
-
-        self.assertEqual(response.status_code, 200)
-        dashboard_user = DashboardUser.objects.get(user=self.user)
-        self.assertEqual(dashboard_user.long_access_token, 'meta-long-token')
-        self.assertIsNotNone(dashboard_user.expired_at)
-        self.assertGreater(dashboard_user.expired_at, before)
-        self.assertGreater(dashboard_user.expired_at, after)
-        self.assertEqual(mocked_get.call_count, 1)
-
-    @patch('Dashboard.api_views.requests.get')
-    def test_meta_connect_uses_debug_token_when_exchange_has_no_expires_in(self, mocked_get):
-        exchange_response = Mock()
-        exchange_response.status_code = 200
-        exchange_response.json.return_value = {
-            'access_token': 'meta-long-token-no-expire-in',
-            'token_type': 'bearer',
-        }
-
-        debug_response = Mock()
-        debug_response.status_code = 200
-        debug_response.json.return_value = {
-            'data': {
-                'is_valid': True,
-                'expires_at': '1770000000',
-            }
-        }
-        mocked_get.side_effect = [exchange_response, debug_response]
-
-        response = self.client.post(
-            '/api/meta/connect',
-            data=json.dumps(
-                {
-                    'id_meta_user': 'meta-user-connect-2',
-                    'short_token': 'short-token-value',
-                }
-            ),
-            content_type='application/json',
-        )
-
-        self.assertEqual(response.status_code, 200)
-        dashboard_user = DashboardUser.objects.get(user=self.user)
-        self.assertIsNotNone(dashboard_user.expired_at)
-        self.assertEqual(int(dashboard_user.expired_at.timestamp()), 1770000000)
-        self.assertEqual(mocked_get.call_count, 2)
-
-    @patch('Dashboard.api_views.requests.get')
-    def test_meta_connect_uses_preventive_expiration_when_debug_token_has_no_expires_at(self, mocked_get):
-        exchange_response = Mock()
-        exchange_response.status_code = 200
-        exchange_response.json.return_value = {
-            'access_token': 'meta-long-token-without-expiration-metadata',
-            'token_type': 'bearer',
-        }
-
-        debug_response = Mock()
-        debug_response.status_code = 200
-        debug_response.json.return_value = {
-            'data': {
-                'is_valid': True,
-            }
-        }
-        mocked_get.side_effect = [exchange_response, debug_response]
-
-        before = django_timezone.now()
-        response = self.client.post(
-            '/api/meta/connect',
-            data=json.dumps(
-                {
-                    'id_meta_user': 'meta-user-connect-3',
-                    'short_token': 'short-token-value',
-                }
-            ),
-            content_type='application/json',
-        )
-        after = django_timezone.now()
-
-        self.assertEqual(response.status_code, 200)
-        dashboard_user = DashboardUser.objects.get(user=self.user)
-        self.assertIsNotNone(dashboard_user.expired_at)
-        lower_bound = before + timedelta(days=49)
-        upper_bound = after + timedelta(days=51)
-        self.assertGreaterEqual(dashboard_user.expired_at, lower_bound)
-        self.assertLessEqual(dashboard_user.expired_at, upper_bound)
-        self.assertEqual(mocked_get.call_count, 2)
+    def test_meta_connect_endpoint_is_removed(self):
+        response = self.client.post('/api/meta/connect', data=json.dumps({}), content_type='application/json')
+        self.assertEqual(response.status_code, 404)
 
 
 class MetaClientTests(TestCase):
