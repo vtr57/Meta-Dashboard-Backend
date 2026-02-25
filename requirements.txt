@@ -1,0 +1,15 @@
+asgiref==3.11.1
+certifi==2026.1.4
+charset-normalizer==3.4.4
+Django==6.0.2
+django-cors-headers==4.9.0
+djangorestframework==3.16.1
+dotenv==0.9.9
+idna==3.11
+psycopg2-binary==2.9.9
+python-dotenv==1.2.1
+requests==2.32.5
+scipy==1.17.1
+sqlparse==0.5.5
+urllib3==2.6.3
+pandas==3.0.1
