@@ -1,11 +1,12 @@
 import secrets
+import json
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.http import HttpResponseRedirect, JsonResponse
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.urls import reverse
 from django.views.decorators.http import require_GET
 
@@ -23,6 +24,13 @@ def _meta_error_message(payload, fallback: str) -> str:
 
 def _is_absolute_http_url(value: str) -> bool:
     return value.startswith('http://') or value.startswith('https://')
+
+
+def _origin_from_url(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme in {'http', 'https'} and parsed.netloc:
+        return f'{parsed.scheme}://{parsed.netloc}'
+    return ''
 
 
 def _merge_query_params(url: str, new_params: dict[str, str]) -> str:
@@ -50,6 +58,53 @@ def _resolve_frontend_redirect_base(request) -> str:
 
 
 def _redirect_with_oauth_result(request, *, connected: bool, error_message: str = ''):
+    popup_mode = bool(request.session.pop('facebook_oauth_popup', False))
+    popup_target_origin = str(request.session.pop('facebook_oauth_target_origin', '') or '').strip()
+    if popup_mode:
+        if not _is_absolute_http_url(popup_target_origin):
+            popup_target_origin = _origin_from_url(str(getattr(settings, 'FRONTEND_CONNECTION_URL', '') or '').strip())
+
+        payload = {
+            'type': 'facebook_oauth_result',
+            'status': 'success' if connected else 'error',
+            'error': (error_message or None) if not connected else None,
+        }
+
+        # Fallback content in case browser blocks window.close.
+        fallback_base = _resolve_frontend_redirect_base(request)
+        if fallback_base:
+            if connected:
+                fallback_url = _merge_query_params(fallback_base, {'fb_connected': '1'})
+            else:
+                fallback_url = _merge_query_params(fallback_base, {'fb_error': error_message or 'oauth_failed'})
+        else:
+            fallback_url = ''
+
+        html = f"""<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Facebook Login</title>
+  </head>
+  <body>
+    <script>
+      (function () {{
+        var payload = {json.dumps(payload, ensure_ascii=False)};
+        var targetOrigin = {json.dumps(popup_target_origin, ensure_ascii=False)};
+        if (window.opener && !window.opener.closed) {{
+          try {{
+            window.opener.postMessage(payload, targetOrigin || "*");
+          }} catch (err) {{}}
+        }}
+        window.close();
+      }})();
+    </script>
+    <p>Finalizando login do Facebook...</p>
+    {"<p><a href='" + fallback_url + "'>Voltar para a aplicacao</a></p>" if fallback_url else ""}
+  </body>
+</html>"""
+        return HttpResponse(html)
+
     base_url = _resolve_frontend_redirect_base(request)
     if not base_url:
         fallback = (
@@ -99,8 +154,12 @@ def facebook_login_start(request):
     next_url = str(request.GET.get('next') or '').strip()
     if _is_absolute_http_url(next_url):
         request.session['facebook_oauth_next'] = next_url
+        request.session['facebook_oauth_target_origin'] = _origin_from_url(next_url)
     else:
         request.session.pop('facebook_oauth_next', None)
+        request.session.pop('facebook_oauth_target_origin', None)
+
+    request.session['facebook_oauth_popup'] = str(request.GET.get('popup') or '').strip() in {'1', 'true', 'yes'}
 
     params['state'] = oauth_state
 
