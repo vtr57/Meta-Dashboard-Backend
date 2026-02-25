@@ -151,21 +151,48 @@ def _parse_csv_env(name: str, default: str = '') -> list[str]:
     return [item.strip() for item in raw.split(',') if item.strip()]
 
 
-_default_csrf_trusted_origins = [
+def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
+    merged = list(base)
+    for item in extra:
+        if item not in merged:
+            merged.append(item)
+    return merged
+
+
+_default_frontend_origins = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
     'http://localhost:4173',
     'http://127.0.0.1:4173',
 ]
-CSRF_TRUSTED_ORIGINS = _default_csrf_trusted_origins + [
-    origin for origin in _parse_csv_env('CSRF_TRUSTED_ORIGINS') if origin not in _default_csrf_trusted_origins
-]
+
+# Produção: configure CORS_ALLOWED_ORIGINS com o domínio do frontend
+# Ex.: https://seu-frontend.vercel.app
+CORS_ALLOWED_ORIGINS = _merge_unique(
+    _default_frontend_origins,
+    _parse_csv_env('CORS_ALLOWED_ORIGINS'),
+)
+
+# Opcional para ambientes com domínios dinâmicos (ex.: previews)
+# Ex.: ^https://.*\.vercel\.app$
+CORS_ALLOWED_ORIGIN_REGEXES = _merge_unique(
+    CORS_ALLOWED_ORIGIN_REGEXES,
+    _parse_csv_env('CORS_ALLOWED_ORIGIN_REGEXES'),
+)
+
+# CSRF em produção deve confiar no mesmo frontend HTTPS
+# Ex.: CSRF_TRUSTED_ORIGINS=https://seu-frontend.vercel.app
+CSRF_TRUSTED_ORIGINS = _merge_unique(
+    _default_frontend_origins,
+    _parse_csv_env('CSRF_TRUSTED_ORIGINS'),
+)
 
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 CSRF_COOKIE_SAMESITE = 'Lax'
 X_FRAME_OPTIONS = 'DENY'
 SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 if not DEBUG:
     SESSION_COOKIE_SECURE = True
