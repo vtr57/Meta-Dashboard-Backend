@@ -21,6 +21,7 @@ from Dashboard.models import (
     AdInsightDaily,
     AdSet,
     AdSetInsightDaily,
+    Anotacoes,
     Campaign,
     CampaignInsightDaily,
     DashboardUser,
@@ -29,6 +30,7 @@ from Dashboard.models import (
     SyncLog,
     SyncRun,
 )
+from Dashboard.serializers import AnotacoesSerializer
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
 
 
@@ -458,6 +460,36 @@ def meta_filters(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def meta_anotacoes(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    serializer_context = {'dashboard_user': dashboard_user}
+
+    if request.method == 'GET':
+        ad_account_id = str(
+            request.query_params.get('ad_account_id') or request.query_params.get('id_meta_ad_account') or ''
+        ).strip()
+        anotacoes_qs = Anotacoes.objects.filter(
+            id_meta_ad_account__id_dashboard_user=dashboard_user
+        ).select_related('id_meta_ad_account')
+        if ad_account_id:
+            anotacoes_qs = anotacoes_qs.filter(id_meta_ad_account__id_meta_ad_account=ad_account_id)
+
+        serializer = AnotacoesSerializer(anotacoes_qs, many=True, context=serializer_context)
+        return Response({'anotacoes': serializer.data}, status=status.HTTP_200_OK)
+
+    serializer = AnotacoesSerializer(data=request.data, context=serializer_context)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    anotacao = serializer.save()
+    output = AnotacoesSerializer(anotacao, context=serializer_context)
+    return Response({'anotacao': output.data}, status=status.HTTP_201_CREATED)
 
 
 @api_view(['GET'])

@@ -13,6 +13,7 @@ from Dashboard.models import (
     AdInsightDaily,
     AdSet,
     AdSetInsightDaily,
+    Anotacoes,
     Campaign,
     CampaignInsightDaily,
     DashboardUser,
@@ -352,6 +353,78 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertAlmostEqual(kpis['cpm_medio'], 100.0, places=4)
         self.assertAlmostEqual(kpis['cpc_medio'], 1.0, places=4)
         self.assertAlmostEqual(kpis['frequencia_media'], 2.0, places=4)
+
+
+class MetaAnotacoesEndpointsTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='notes-user', password='Secret123!')
+        self.client = Client()
+        self.client.force_login(self.user)
+        self.dashboard_user = DashboardUser.objects.create(
+            user=self.user,
+            id_meta_user='meta-user-notes',
+            long_access_token='token',
+        )
+        self.ad_account = AdAccount.objects.create(
+            id_meta_ad_account='act_notes_1',
+            name='Conta Notes',
+            id_dashboard_user=self.dashboard_user,
+        )
+
+        self.other_user = User.objects.create_user(username='notes-other', password='Secret123!')
+        self.other_dashboard_user = DashboardUser.objects.create(
+            user=self.other_user,
+            id_meta_user='meta-user-notes-other',
+            long_access_token='token',
+        )
+        self.other_ad_account = AdAccount.objects.create(
+            id_meta_ad_account='act_notes_other',
+            name='Conta Other',
+            id_dashboard_user=self.other_dashboard_user,
+        )
+
+    def test_create_and_list_anotacoes_for_selected_account(self):
+        create_response = self.client.post(
+            '/api/meta/anotacoes',
+            data=json.dumps(
+                {
+                    'id_meta_ad_account': self.ad_account.id_meta_ad_account,
+                    'observacoes': 'Primeira observacao da conta.',
+                }
+            ),
+            content_type='application/json',
+        )
+        self.assertEqual(create_response.status_code, 201)
+        created = create_response.json()['anotacao']
+        self.assertEqual(created['id_meta_ad_account'], self.ad_account.id_meta_ad_account)
+        self.assertEqual(created['observacoes'], 'Primeira observacao da conta.')
+        self.assertTrue(created['data_criacao'])
+
+        Anotacoes.objects.create(
+            id_meta_ad_account=self.other_ad_account,
+            observacoes='Observacao de outro usuario.',
+        )
+
+        list_response = self.client.get('/api/meta/anotacoes', {'ad_account_id': self.ad_account.id_meta_ad_account})
+        self.assertEqual(list_response.status_code, 200)
+        rows = list_response.json()['anotacoes']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['observacoes'], 'Primeira observacao da conta.')
+
+    def test_create_anotacao_rejects_other_users_ad_account(self):
+        response = self.client.post(
+            '/api/meta/anotacoes',
+            data=json.dumps(
+                {
+                    'id_meta_ad_account': self.other_ad_account.id_meta_ad_account,
+                    'observacoes': 'Tentativa invalida.',
+                }
+            ),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('id_meta_ad_account', response.json())
+        self.assertEqual(Anotacoes.objects.filter(observacoes='Tentativa invalida.').count(), 0)
 
 
 class MetaSyncStartScopeEndpointsTests(TestCase):

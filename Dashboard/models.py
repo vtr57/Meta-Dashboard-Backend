@@ -90,6 +90,25 @@ class Ad(models.Model):
         return f'{self.name} ({self.id_meta_ad})'
 
 
+class Anotacoes(models.Model):
+    id_meta_ad_account = models.ForeignKey(
+        AdAccount,
+        on_delete=models.CASCADE,
+        related_name='anotacoes',
+    )
+    observacoes = models.TextField()
+    data_criacao = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['id_meta_ad_account', 'data_criacao']),
+        ]
+        ordering = ['-data_criacao']
+
+    def __str__(self):
+        return f'Anotacao {self.id} - {self.id_meta_ad_account.id_meta_ad_account}'
+
+
 class InsightMetricsBase(models.Model):
     gasto_diario = models.DecimalField(max_digits=18, decimal_places=4, default=0)
     impressao_diaria = models.PositiveBigIntegerField(default=0)
