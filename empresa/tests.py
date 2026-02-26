@@ -48,8 +48,30 @@ class MetaFundingServiceTests(TestCase):
         parsed = _parse_decimal_from_display_string('Saldo disponivel (R$193,47 BRL)')
         self.assertEqual(parsed, Decimal('193.47'))
 
+    @patch('empresa.models.timezone.localdate', return_value=date(2026, 2, 20))
+    def test_data_renovacao_creditos_is_calculated_from_saldo_and_gasto(self, _mocked_localdate):
+        cliente = Cliente.objects.create(
+            name='Cliente Formula',
+            nicho_atuacao='Servico',
+            valor_investido=Decimal('100.00'),
+            forma_pagamento=Cliente.FORMA_PAGAMENTO_PIX,
+            periodo_cobranca=Cliente.PERIODO_COBRANCA_MENSAL,
+            saldo_atual=Decimal('200.00'),
+            gasto_diario=Decimal('10.00'),
+            nome=self.ad_account,
+            data_renovacao_creditos=date(2026, 1, 1),
+        )
+
+        # int(200/10 - 2) = 18; 2026-02-20 + 18 dias = 2026-03-10
+        self.assertEqual(cliente.data_renovacao_creditos, date(2026, 3, 10))
+
     @patch('empresa.meta_funding_service.MetaGraphClient.batch_request', autospec=True)
-    def test_sync_uses_single_batch_call_for_multiple_clientes_same_ad_account(self, mocked_batch_request):
+    @patch('empresa.models.timezone.localdate', return_value=date(2026, 2, 20))
+    def test_sync_uses_single_batch_call_for_multiple_clientes_same_ad_account(
+        self,
+        _mocked_localdate,
+        mocked_batch_request,
+    ):
         cliente_a = self._create_cliente(name='Cliente A', saldo_atual='0.00')
         cliente_b = self._create_cliente(name='Cliente B', saldo_atual='1.00')
         mocked_batch_request.return_value = [
@@ -82,6 +104,9 @@ class MetaFundingServiceTests(TestCase):
         cliente_b.refresh_from_db()
         self.assertEqual(cliente_a.saldo_atual, Decimal('193.47'))
         self.assertEqual(cliente_b.saldo_atual, Decimal('193.47'))
+        # int(193.47/10 - 2) = 17; 2026-02-20 + 17 dias = 2026-03-09
+        self.assertEqual(cliente_a.data_renovacao_creditos, date(2026, 3, 9))
+        self.assertEqual(cliente_b.data_renovacao_creditos, date(2026, 3, 9))
         self.assertEqual(result['updated_clientes'], 2)
         self.assertEqual(result['error_count'], 0)
         self.assertEqual(result['parse_error_count'], 0)

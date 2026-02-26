@@ -1,7 +1,6 @@
 import logging
 from decimal import Decimal, InvalidOperation
 
-from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -183,14 +182,6 @@ def clientes(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    data_renovacao_raw = str(request.data.get('data_renovacao_creditos') or '').strip()
-    data_renovacao = parse_date(data_renovacao_raw)
-    if data_renovacao is None:
-        return Response(
-            {'detail': 'Campo data_renovacao_creditos invalido. Use o formato YYYY-MM-DD.'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
     ad_account = AdAccount.objects.filter(
         id=ad_account_id,
         id_dashboard_user__user=request.user,
@@ -233,7 +224,6 @@ def clientes(request):
         saldo_atual=saldo_atual,
         gasto_diario=gasto_diario,
         nome=ad_account,
-        data_renovacao_creditos=data_renovacao,
     )
     return Response(
         {
@@ -296,17 +286,6 @@ def cliente_detail(request, cliente_id: int):
             )
 
         cliente.nome = ad_account
-        has_updates = True
-
-    if 'data_renovacao_creditos' in request.data:
-        data_renovacao_raw = str(request.data.get('data_renovacao_creditos') or '').strip()
-        data_renovacao = parse_date(data_renovacao_raw)
-        if data_renovacao is None:
-            return Response(
-                {'detail': 'Campo data_renovacao_creditos invalido. Use o formato YYYY-MM-DD.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        cliente.data_renovacao_creditos = data_renovacao
         has_updates = True
 
     if 'nicho_atuacao' in request.data:

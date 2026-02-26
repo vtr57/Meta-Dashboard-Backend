@@ -178,13 +178,21 @@ def sync_clientes_saldo_atual_from_meta(user, *, batch_size: int = 50) -> Dict:
     for ad_account_id, parsed_amount in parsed_amount_by_ad_account.items():
         linked_clientes = ad_account_to_clientes.get(ad_account_id) or []
         for cliente in linked_clientes:
-            if cliente.saldo_atual == parsed_amount:
-                continue
-            cliente.saldo_atual = parsed_amount
-            clientes_to_update.append(cliente)
+            has_updates = False
+            if cliente.saldo_atual != parsed_amount:
+                cliente.saldo_atual = parsed_amount
+                has_updates = True
+
+            next_data_renovacao = cliente.calcular_data_renovacao_creditos()
+            if cliente.data_renovacao_creditos != next_data_renovacao:
+                cliente.data_renovacao_creditos = next_data_renovacao
+                has_updates = True
+
+            if has_updates:
+                clientes_to_update.append(cliente)
 
     if clientes_to_update:
-        Cliente.objects.bulk_update(clientes_to_update, ['saldo_atual'])
+        Cliente.objects.bulk_update(clientes_to_update, ['saldo_atual', 'data_renovacao_creditos'])
 
     return {
         'updated_clientes': len(clientes_to_update),

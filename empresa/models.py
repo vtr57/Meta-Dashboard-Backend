@@ -1,4 +1,8 @@
+from datetime import timedelta
+from decimal import Decimal
+
 from django.db import models
+from django.utils import timezone
 
 
 class Cliente(models.Model):
@@ -44,3 +48,24 @@ class Cliente(models.Model):
 
     def __str__(self):
         return f'{self.name} ({self.nome.name}) - renovacao {self.data_renovacao_creditos}'
+
+    def calcular_data_renovacao_creditos(self, *, base_date=None):
+        today = base_date or timezone.localdate()
+        saldo = Decimal(self.saldo_atual or 0)
+        gasto = Decimal(self.gasto_diario or 0)
+
+        if gasto <= 0:
+            dias = 0
+        else:
+            dias = int((saldo / gasto) - Decimal('2'))
+
+        return today + timedelta(days=dias)
+
+    def save(self, *args, **kwargs):
+        self.data_renovacao_creditos = self.calcular_data_renovacao_creditos()
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None:
+            merged_update_fields = set(update_fields)
+            merged_update_fields.add('data_renovacao_creditos')
+            kwargs['update_fields'] = list(merged_update_fields)
+        super().save(*args, **kwargs)
