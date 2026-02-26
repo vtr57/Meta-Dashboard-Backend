@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -50,7 +51,6 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -59,6 +59,9 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+
+MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
 
 ROOT_URLCONF = 'config.urls'
 
@@ -149,9 +152,12 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-def _parse_csv_env(name: str, default: str = '') -> list[str]:
+def _parse_csv_env(name: str, default: str = '', *, strip_trailing_slash: bool = False) -> list[str]:
     raw = os.getenv(name, default)
-    return [item.strip() for item in raw.split(',') if item.strip()]
+    values = [item.strip() for item in raw.split(',') if item.strip()]
+    if strip_trailing_slash:
+        values = [item.rstrip('/') for item in values]
+    return values
 
 
 def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
@@ -173,7 +179,7 @@ _default_frontend_origins = [
 # Ex.: https://seu-frontend.vercel.app
 CORS_ALLOWED_ORIGINS = _merge_unique(
     _default_frontend_origins,
-    _parse_csv_env('CORS_ALLOWED_ORIGINS'),
+    _parse_csv_env('CORS_ALLOWED_ORIGINS', strip_trailing_slash=True),
 )
 
 # Opcional para ambientes com domínios dinâmicos (ex.: previews)
@@ -187,7 +193,7 @@ CORS_ALLOWED_ORIGIN_REGEXES = _merge_unique(
 # Ex.: CSRF_TRUSTED_ORIGINS=https://seu-frontend.vercel.app
 CSRF_TRUSTED_ORIGINS = _merge_unique(
     _default_frontend_origins,
-    _parse_csv_env('CSRF_TRUSTED_ORIGINS'),
+    _parse_csv_env('CSRF_TRUSTED_ORIGINS', strip_trailing_slash=True),
 )
 
 SESSION_COOKIE_HTTPONLY = True
@@ -201,14 +207,15 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 if not DEBUG:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    STORAGES = {
-        'default': {
-            'BACKEND': 'django.core.files.storage.FileSystemStorage',
-        },
-        'staticfiles': {
-            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
-        },
-    }
+    if HAS_WHITENOISE:
+        STORAGES = {
+            'default': {
+                'BACKEND': 'django.core.files.storage.FileSystemStorage',
+            },
+            'staticfiles': {
+                'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+            },
+        }
 
 META_GRAPH_VERSION = os.getenv('META_GRAPH_VERSION', 'v24.0')
 META_APP_ID = os.getenv('META_APP_ID', '')
