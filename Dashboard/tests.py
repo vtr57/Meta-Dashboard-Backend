@@ -426,6 +426,24 @@ class MetaAnotacoesEndpointsTests(TestCase):
         self.assertIn('id_meta_ad_account', response.json())
         self.assertEqual(Anotacoes.objects.filter(observacoes='Tentativa invalida.').count(), 0)
 
+    def test_delete_anotacao_for_current_user(self):
+        anotacao = Anotacoes.objects.create(
+            id_meta_ad_account=self.ad_account,
+            observacoes='Anotacao para excluir.',
+        )
+        response = self.client.delete(f'/api/meta/anotacoes/{anotacao.id}')
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Anotacoes.objects.filter(id=anotacao.id).exists())
+
+    def test_delete_anotacao_from_other_user_returns_404(self):
+        other_note = Anotacoes.objects.create(
+            id_meta_ad_account=self.other_ad_account,
+            observacoes='Nao pode excluir.',
+        )
+        response = self.client.delete(f'/api/meta/anotacoes/{other_note.id}')
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Anotacoes.objects.filter(id=other_note.id).exists())
+
 
 class MetaSyncStartScopeEndpointsTests(TestCase):
     def setUp(self):

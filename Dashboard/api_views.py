@@ -492,6 +492,24 @@ def meta_anotacoes(request):
     return Response({'anotacao': output.data}, status=status.HTTP_201_CREATED)
 
 
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def meta_anotacao_delete(request, anotacao_id: int):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    anotacao = Anotacoes.objects.filter(
+        id=anotacao_id,
+        id_meta_ad_account__id_dashboard_user=dashboard_user,
+    ).first()
+    if anotacao is None:
+        return Response({'detail': 'Anotacao nao encontrada.'}, status=status.HTTP_404_NOT_FOUND)
+
+    anotacao.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def meta_timeseries(request):
