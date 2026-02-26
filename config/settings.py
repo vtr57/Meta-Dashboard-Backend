@@ -207,15 +207,14 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 if not DEBUG:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-    if HAS_WHITENOISE:
-        STORAGES = {
-            'default': {
-                'BACKEND': 'django.core.files.storage.FileSystemStorage',
-            },
-            'staticfiles': {
-                'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
-            },
-        }
+    STORAGES = {
+        'default': {
+            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        },
+        'staticfiles': {
+            'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        },
+    }
 
 META_GRAPH_VERSION = os.getenv('META_GRAPH_VERSION', 'v24.0')
 META_APP_ID = os.getenv('META_APP_ID', '')
