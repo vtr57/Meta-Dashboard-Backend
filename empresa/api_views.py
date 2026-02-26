@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal, InvalidOperation
 
 from django.utils.dateparse import parse_date
@@ -9,6 +10,10 @@ from rest_framework.response import Response
 from Dashboard.models import AdAccount
 
 from .models import Cliente
+from .meta_funding_service import sync_clientes_saldo_atual_from_meta
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_ids_param(raw_ids: str):
@@ -87,6 +92,24 @@ def _serialize_cliente(cliente: Cliente) -> dict:
 @permission_classes([IsAuthenticated])
 def clientes(request):
     if request.method == 'GET':
+        refresh_saldo_raw = str(request.query_params.get('refresh_saldo') or '').strip().lower()
+        should_refresh_saldo = refresh_saldo_raw in {'1', 'true', 'yes'}
+        saldo_sync = None
+        if should_refresh_saldo:
+            try:
+                saldo_sync = sync_clientes_saldo_atual_from_meta(request.user)
+            except Exception:
+                logger.exception('Falha inesperada ao sincronizar saldo_atual dos clientes.')
+                saldo_sync = {
+                    'updated_clientes': 0,
+                    'total_clientes': 0,
+                    'total_ad_accounts': 0,
+                    'error_count': 1,
+                    'parse_error_count': 0,
+                    'skipped': False,
+                    'detail': 'Falha inesperada ao sincronizar saldo_atual.',
+                }
+
         queryset = (
             Cliente.objects.select_related('nome')
             .filter(nome__id_dashboard_user__user=request.user)
@@ -103,7 +126,10 @@ def clientes(request):
             queryset = queryset.filter(id__in=parsed_ids)
 
         payload = [_serialize_cliente(cliente) for cliente in queryset]
-        return Response({'clientes': payload, 'total': len(payload)}, status=status.HTTP_200_OK)
+        response_payload = {'clientes': payload, 'total': len(payload)}
+        if saldo_sync is not None:
+            response_payload['saldo_sync'] = saldo_sync
+        return Response(response_payload, status=status.HTTP_200_OK)
 
     if request.method == 'DELETE':
         raw_ids = str(request.query_params.get('ids') or '').strip()
