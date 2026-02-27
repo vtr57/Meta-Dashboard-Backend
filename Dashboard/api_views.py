@@ -123,6 +123,12 @@ def meta_sync_start_insights_7d(request):
     return _start_sync(request, sync_scope='all', insights_days_override=7)
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def meta_sync_start_insights_1d(request):
+    return _start_sync(request, sync_scope='all', insights_days_override=1)
+
+
 def _start_sync(request, sync_scope: str, insights_days_override: Optional[int] = None):
     dashboard_user = DashboardUser.objects.filter(user=request.user).first()
     if dashboard_user is None:

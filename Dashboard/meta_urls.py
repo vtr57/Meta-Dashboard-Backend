@@ -27,6 +27,12 @@ urlpatterns = [
         api_views.meta_sync_start_insights_7d,
         name='meta-sync-start-insights-7d-slash',
     ),
+    path('sync/start/insights-1d', api_views.meta_sync_start_insights_1d, name='meta-sync-start-insights-1d'),
+    path(
+        'sync/start/insights-1d/',
+        api_views.meta_sync_start_insights_1d,
+        name='meta-sync-start-insights-1d-slash',
+    ),
     path('sync/<int:sync_run_id>/logs', api_views.meta_sync_logs, name='meta-sync-logs'),
     path('sync/<int:sync_run_id>/logs/', api_views.meta_sync_logs, name='meta-sync-logs-slash'),
 ]

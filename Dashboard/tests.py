@@ -499,6 +499,21 @@ class MetaSyncStartScopeEndpointsTests(TestCase):
         self.assertEqual(args[2], 'all')
         self.assertEqual(args[3], 7)
 
+    @patch('Dashboard.api_views.threading.Thread')
+    def test_meta_sync_start_insights_1d_endpoint(self, mocked_thread):
+        mocked_thread.return_value = Mock()
+
+        response = self.client.post('/api/meta/sync/start/insights-1d')
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload['sync_scope'], 'all')
+        self.assertEqual(payload['insights_days_override'], 1)
+
+        args = mocked_thread.call_args.kwargs['args']
+        self.assertEqual(args[1], self.dashboard_user.id)
+        self.assertEqual(args[2], 'all')
+        self.assertEqual(args[3], 1)
+
 
 class MetaBatchEntityExtractionTests(TestCase):
     def setUp(self):
