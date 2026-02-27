@@ -11,11 +11,13 @@ from .models import (
     FacebookPage,
     InstagramAccount,
     MediaInstagram,
+    Anotacoes
 )
 
 admin.site.register(DashboardUser)
 admin.site.register(MediaInstagram)
 admin.site.register(InstagramAccount)
+admin.site.register(Anotacoes)
 admin.site.register(FacebookPage)
 admin.site.register(AdInsightDaily)
 admin.site.register(AdSetInsightDaily)
