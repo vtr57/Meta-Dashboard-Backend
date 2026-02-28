@@ -506,12 +506,12 @@ class MetaSyncStartScopeEndpointsTests(TestCase):
         response = self.client.post('/api/meta/sync/start/insights-1d')
         self.assertEqual(response.status_code, 202)
         payload = response.json()
-        self.assertEqual(payload['sync_scope'], 'all')
+        self.assertEqual(payload['sync_scope'], 'meta')
         self.assertEqual(payload['insights_days_override'], 1)
 
         args = mocked_thread.call_args.kwargs['args']
         self.assertEqual(args[1], self.dashboard_user.id)
-        self.assertEqual(args[2], 'all')
+        self.assertEqual(args[2], 'meta')
         self.assertEqual(args[3], 1)
 
 

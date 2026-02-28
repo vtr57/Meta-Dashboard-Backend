@@ -126,7 +126,7 @@ def meta_sync_start_insights_7d(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def meta_sync_start_insights_1d(request):
-    return _start_sync(request, sync_scope='all', insights_days_override=1)
+    return _start_sync(request, sync_scope='meta', insights_days_override=1)
 
 
 def _start_sync(request, sync_scope: str, insights_days_override: Optional[int] = None):
