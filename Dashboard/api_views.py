@@ -401,7 +401,7 @@ def _build_meta_specific_ad_queryset(dashboard_user: DashboardUser, filters: dic
 
     qs = AdInsightDaily.objects.filter(
         id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__id_dashboard_user=dashboard_user
-    )
+    ).filter(id_meta_ad__effective_status__iexact='active')
     level = 'ad_account'
 
     if ad_account_id:
@@ -674,7 +674,10 @@ def meta_specific_insights(request):
 
     daily_rows = (
         qs.values('created_at')
-        .annotate(spend_total=Sum('gasto_diario'))
+        .annotate(
+            spend_total=Sum('gasto_diario'),
+            results_total=Sum('quantidade_results_diaria'),
+        )
         .order_by('created_at')
     )
     rows_by_ad = (
@@ -684,6 +687,11 @@ def meta_specific_insights(request):
             results_total=Sum('quantidade_results_diaria'),
         )
         .order_by('id_meta_ad__name', 'id_meta_ad__id_meta_ad')
+    )
+    timeseries_by_ad_rows = (
+        qs.values('id_meta_ad__id_meta_ad', 'id_meta_ad__name', 'created_at')
+        .annotate(spend_total=Sum('gasto_diario'))
+        .order_by('id_meta_ad__name', 'id_meta_ad__id_meta_ad', 'created_at')
     )
 
     payload = {
@@ -695,11 +703,33 @@ def meta_specific_insights(request):
             {
                 'date': row['created_at'],
                 'spend': round(_to_float(row['spend_total']), 4),
+                'results': _to_int(row['results_total']),
             }
             for row in daily_rows
         ],
+        'timeseries_by_ad': [],
         'rows_by_ad': [],
     }
+
+    series_by_ad_map = {}
+    for row in timeseries_by_ad_rows:
+        ad_id = row['id_meta_ad__id_meta_ad']
+        current = series_by_ad_map.get(ad_id)
+        if current is None:
+            current = {
+                'ad_id': ad_id,
+                'ad_name': row['id_meta_ad__name'] or ad_id,
+                'points': [],
+            }
+            series_by_ad_map[ad_id] = current
+        current['points'].append(
+            {
+                'date': row['created_at'],
+                'spend': round(_to_float(row['spend_total']), 4),
+            }
+        )
+
+    payload['timeseries_by_ad'] = list(series_by_ad_map.values())
 
     for row in rows_by_ad:
         spend_total = round(_to_float(row['spend_total']), 4)

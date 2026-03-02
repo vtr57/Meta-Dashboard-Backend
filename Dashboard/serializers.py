@@ -26,6 +26,18 @@ class AnotacoesSerializer(serializers.ModelSerializer):
 class MetaSpecificTimeseriesDailySerializer(serializers.Serializer):
     date = serializers.DateField()
     spend = serializers.FloatField()
+    results = serializers.IntegerField()
+
+
+class MetaSpecificTimeseriesByAdPointSerializer(serializers.Serializer):
+    date = serializers.DateField()
+    spend = serializers.FloatField()
+
+
+class MetaSpecificTimeseriesByAdSerializer(serializers.Serializer):
+    ad_id = serializers.CharField()
+    ad_name = serializers.CharField()
+    points = MetaSpecificTimeseriesByAdPointSerializer(many=True)
 
 
 class MetaSpecificRowByAdSerializer(serializers.Serializer):
@@ -42,4 +54,5 @@ class MetaSpecificInsightsSerializer(serializers.Serializer):
     date_end = serializers.DateField()
     filters = serializers.DictField(child=serializers.CharField(allow_blank=True))
     timeseries_daily = MetaSpecificTimeseriesDailySerializer(many=True)
+    timeseries_by_ad = MetaSpecificTimeseriesByAdSerializer(many=True)
     rows_by_ad = MetaSpecificRowByAdSerializer(many=True)

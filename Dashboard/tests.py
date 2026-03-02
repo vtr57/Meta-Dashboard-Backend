@@ -297,11 +297,19 @@ class MetaDashboardEndpointsTests(TestCase):
             id_meta_ad='ad_200',
             id_meta_adset=self.adset,
             name='Ad 200',
+            effective_status='ACTIVE',
         )
         self.ad_secondary = Ad.objects.create(
             id_meta_ad='ad_201',
             id_meta_adset=self.adset,
             name='Ad 201',
+            effective_status='ACTIVE',
+        )
+        self.ad_inactive = Ad.objects.create(
+            id_meta_ad='ad_202',
+            id_meta_adset=self.adset,
+            name='Ad 202',
+            effective_status='PAUSED',
         )
 
         CampaignInsightDaily.objects.create(
@@ -346,6 +354,12 @@ class MetaDashboardEndpointsTests(TestCase):
             gasto_diario='5',
             quantidade_results_diaria=0,
         )
+        AdInsightDaily.objects.create(
+            id_meta_ad=self.ad_inactive,
+            created_at=date(2026, 1, 1),
+            gasto_diario='99',
+            quantidade_results_diaria=99,
+        )
 
     def test_meta_filters_returns_account_hierarchy(self):
         response = self.client.get('/api/meta/filters')
@@ -383,7 +397,7 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertAlmostEqual(kpis['cpc_medio'], 1.0, places=4)
         self.assertAlmostEqual(kpis['frequencia_media'], 2.0, places=4)
 
-    def test_meta_specific_insights_returns_daily_spend_and_rows_by_ad(self):
+    def test_meta_specific_insights_returns_only_active_ads_and_daily_results(self):
         params = {
             'ad_account_id': 'act_200',
             'date_start': '2026-01-01',
@@ -398,7 +412,36 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(payload['filters']['ad_id'], '')
 
         timeseries_daily = payload['timeseries_daily']
-        self.assertEqual(timeseries_daily, [{'date': '2026-01-01', 'spend': 5.0}, {'date': '2026-01-02', 'spend': 12.0}])
+        self.assertEqual(
+            timeseries_daily,
+            [
+                {'date': '2026-01-01', 'spend': 5.0, 'results': 1},
+                {'date': '2026-01-02', 'spend': 12.0, 'results': 3},
+            ],
+        )
+
+        timeseries_by_ad = payload['timeseries_by_ad']
+        self.assertEqual(
+            timeseries_by_ad,
+            [
+                {
+                    'ad_id': 'ad_200',
+                    'ad_name': 'Ad 200',
+                    'points': [
+                        {'date': '2026-01-01', 'spend': 3.0},
+                        {'date': '2026-01-02', 'spend': 7.0},
+                    ],
+                },
+                {
+                    'ad_id': 'ad_201',
+                    'ad_name': 'Ad 201',
+                    'points': [
+                        {'date': '2026-01-01', 'spend': 2.0},
+                        {'date': '2026-01-02', 'spend': 5.0},
+                    ],
+                },
+            ],
+        )
 
         rows_by_ad = payload['rows_by_ad']
         self.assertEqual(len(rows_by_ad), 2)
@@ -411,6 +454,7 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(rows_by_ad[1]['results'], 0)
         self.assertEqual(rows_by_ad[1]['spend'], 7.0)
         self.assertIsNone(rows_by_ad[1]['cpr'])
+        self.assertTrue(all(row['ad_id'] != 'ad_202' for row in rows_by_ad))
 
 
 class MetaAnotacoesEndpointsTests(TestCase):
