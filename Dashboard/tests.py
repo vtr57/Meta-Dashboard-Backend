@@ -298,6 +298,11 @@ class MetaDashboardEndpointsTests(TestCase):
             id_meta_adset=self.adset,
             name='Ad 200',
         )
+        self.ad_secondary = Ad.objects.create(
+            id_meta_ad='ad_201',
+            id_meta_adset=self.adset,
+            name='Ad 201',
+        )
 
         CampaignInsightDaily.objects.create(
             id_meta_campaign=self.campaign,
@@ -316,6 +321,30 @@ class MetaDashboardEndpointsTests(TestCase):
             alcance_diario=100,
             quantidade_results_diaria=3,
             quantidade_clicks_diaria=10,
+        )
+        AdInsightDaily.objects.create(
+            id_meta_ad=self.ad,
+            created_at=date(2026, 1, 1),
+            gasto_diario='3',
+            quantidade_results_diaria=1,
+        )
+        AdInsightDaily.objects.create(
+            id_meta_ad=self.ad,
+            created_at=date(2026, 1, 2),
+            gasto_diario='7',
+            quantidade_results_diaria=3,
+        )
+        AdInsightDaily.objects.create(
+            id_meta_ad=self.ad_secondary,
+            created_at=date(2026, 1, 1),
+            gasto_diario='2',
+            quantidade_results_diaria=0,
+        )
+        AdInsightDaily.objects.create(
+            id_meta_ad=self.ad_secondary,
+            created_at=date(2026, 1, 2),
+            gasto_diario='5',
+            quantidade_results_diaria=0,
         )
 
     def test_meta_filters_returns_account_hierarchy(self):
@@ -353,6 +382,35 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertAlmostEqual(kpis['cpm_medio'], 100.0, places=4)
         self.assertAlmostEqual(kpis['cpc_medio'], 1.0, places=4)
         self.assertAlmostEqual(kpis['frequencia_media'], 2.0, places=4)
+
+    def test_meta_specific_insights_returns_daily_spend_and_rows_by_ad(self):
+        params = {
+            'ad_account_id': 'act_200',
+            'date_start': '2026-01-01',
+            'date_end': '2026-01-02',
+            'ad_id': 'ad_200',
+        }
+        response = self.client.get('/api/meta/specific-insights', params)
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        self.assertEqual(payload['level'], 'ad_account')
+        self.assertEqual(payload['filters']['ad_id'], '')
+
+        timeseries_daily = payload['timeseries_daily']
+        self.assertEqual(timeseries_daily, [{'date': '2026-01-01', 'spend': 5.0}, {'date': '2026-01-02', 'spend': 12.0}])
+
+        rows_by_ad = payload['rows_by_ad']
+        self.assertEqual(len(rows_by_ad), 2)
+        self.assertEqual(rows_by_ad[0]['ad_id'], 'ad_200')
+        self.assertEqual(rows_by_ad[0]['ad_name'], 'Ad 200')
+        self.assertEqual(rows_by_ad[0]['results'], 4)
+        self.assertEqual(rows_by_ad[0]['spend'], 10.0)
+        self.assertEqual(rows_by_ad[0]['cpr'], 2.5)
+        self.assertEqual(rows_by_ad[1]['ad_id'], 'ad_201')
+        self.assertEqual(rows_by_ad[1]['results'], 0)
+        self.assertEqual(rows_by_ad[1]['spend'], 7.0)
+        self.assertIsNone(rows_by_ad[1]['cpr'])
 
 
 class MetaAnotacoesEndpointsTests(TestCase):

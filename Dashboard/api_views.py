@@ -30,7 +30,7 @@ from Dashboard.models import (
     SyncLog,
     SyncRun,
 )
-from Dashboard.serializers import AnotacoesSerializer
+from Dashboard.serializers import AnotacoesSerializer, MetaSpecificInsightsSerializer
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
 
 
@@ -394,6 +394,28 @@ def _build_meta_insight_queryset(dashboard_user: DashboardUser, filters: dict):
     return level, qs
 
 
+def _build_meta_specific_ad_queryset(dashboard_user: DashboardUser, filters: dict):
+    ad_account_id = filters['ad_account_id']
+    campaign_id = filters['campaign_id']
+    adset_id = filters['adset_id']
+
+    qs = AdInsightDaily.objects.filter(
+        id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__id_dashboard_user=dashboard_user
+    )
+    level = 'ad_account'
+
+    if ad_account_id:
+        qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
+    if campaign_id:
+        qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_campaign=campaign_id)
+        level = 'campaign'
+    if adset_id:
+        qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_adset=adset_id)
+        level = 'adset'
+
+    return level, qs
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def meta_filters(request):
@@ -627,6 +649,73 @@ def meta_kpis(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def meta_specific_insights(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    date_start, date_end, date_error = _parse_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    raw_filters = _get_meta_filter_values(request)
+    filters = {
+        'ad_account_id': raw_filters['ad_account_id'],
+        'campaign_id': raw_filters['campaign_id'],
+        'adset_id': raw_filters['adset_id'],
+        'ad_id': '',
+    }
+    level, qs = _build_meta_specific_ad_queryset(dashboard_user, filters)
+    qs = qs.filter(created_at__gte=date_start, created_at__lte=date_end)
+
+    daily_rows = (
+        qs.values('created_at')
+        .annotate(spend_total=Sum('gasto_diario'))
+        .order_by('created_at')
+    )
+    rows_by_ad = (
+        qs.values('id_meta_ad__id_meta_ad', 'id_meta_ad__name')
+        .annotate(
+            spend_total=Sum('gasto_diario'),
+            results_total=Sum('quantidade_results_diaria'),
+        )
+        .order_by('id_meta_ad__name', 'id_meta_ad__id_meta_ad')
+    )
+
+    payload = {
+        'level': level,
+        'date_start': date_start,
+        'date_end': date_end,
+        'filters': filters,
+        'timeseries_daily': [
+            {
+                'date': row['created_at'],
+                'spend': round(_to_float(row['spend_total']), 4),
+            }
+            for row in daily_rows
+        ],
+        'rows_by_ad': [],
+    }
+
+    for row in rows_by_ad:
+        spend_total = round(_to_float(row['spend_total']), 4)
+        results_total = _to_int(row['results_total'])
+        payload['rows_by_ad'].append(
+            {
+                'ad_id': row['id_meta_ad__id_meta_ad'],
+                'ad_name': row['id_meta_ad__name'] or row['id_meta_ad__id_meta_ad'],
+                'results': results_total,
+                'spend': spend_total,
+                'cpr': round(spend_total / results_total, 4) if results_total > 0 else None,
+            }
+        )
+
+    serializer = MetaSpecificInsightsSerializer(payload)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 def _instagram_accounts_queryset(dashboard_user: DashboardUser):

@@ -22,3 +22,24 @@ class AnotacoesSerializer(serializers.ModelSerializer):
                 id_dashboard_user=dashboard_user
             ).order_by('id_meta_ad_account')
 
+
+class MetaSpecificTimeseriesDailySerializer(serializers.Serializer):
+    date = serializers.DateField()
+    spend = serializers.FloatField()
+
+
+class MetaSpecificRowByAdSerializer(serializers.Serializer):
+    ad_id = serializers.CharField()
+    ad_name = serializers.CharField()
+    results = serializers.IntegerField()
+    spend = serializers.FloatField()
+    cpr = serializers.FloatField(allow_null=True)
+
+
+class MetaSpecificInsightsSerializer(serializers.Serializer):
+    level = serializers.CharField()
+    date_start = serializers.DateField()
+    date_end = serializers.DateField()
+    filters = serializers.DictField(child=serializers.CharField(allow_blank=True))
+    timeseries_daily = MetaSpecificTimeseriesDailySerializer(many=True)
+    rows_by_ad = MetaSpecificRowByAdSerializer(many=True)
