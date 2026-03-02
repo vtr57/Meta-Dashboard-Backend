@@ -32,6 +32,7 @@ class MetaSpecificTimeseriesDailySerializer(serializers.Serializer):
 class MetaSpecificTimeseriesByAdPointSerializer(serializers.Serializer):
     date = serializers.DateField()
     spend = serializers.FloatField()
+    results = serializers.IntegerField()
 
 
 class MetaSpecificTimeseriesByAdSerializer(serializers.Serializer):

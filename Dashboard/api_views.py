@@ -690,7 +690,10 @@ def meta_specific_insights(request):
     )
     timeseries_by_ad_rows = (
         qs.values('id_meta_ad__id_meta_ad', 'id_meta_ad__name', 'created_at')
-        .annotate(spend_total=Sum('gasto_diario'))
+        .annotate(
+            spend_total=Sum('gasto_diario'),
+            results_total=Sum('quantidade_results_diaria'),
+        )
         .order_by('id_meta_ad__name', 'id_meta_ad__id_meta_ad', 'created_at')
     )
 
@@ -726,6 +729,7 @@ def meta_specific_insights(request):
             {
                 'date': row['created_at'],
                 'spend': round(_to_float(row['spend_total']), 4),
+                'results': _to_int(row['results_total']),
             }
         )
 

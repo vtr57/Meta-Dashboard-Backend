@@ -428,16 +428,16 @@ class MetaDashboardEndpointsTests(TestCase):
                     'ad_id': 'ad_200',
                     'ad_name': 'Ad 200',
                     'points': [
-                        {'date': '2026-01-01', 'spend': 3.0},
-                        {'date': '2026-01-02', 'spend': 7.0},
+                        {'date': '2026-01-01', 'spend': 3.0, 'results': 1},
+                        {'date': '2026-01-02', 'spend': 7.0, 'results': 3},
                     ],
                 },
                 {
                     'ad_id': 'ad_201',
                     'ad_name': 'Ad 201',
                     'points': [
-                        {'date': '2026-01-01', 'spend': 2.0},
-                        {'date': '2026-01-02', 'spend': 5.0},
+                        {'date': '2026-01-01', 'spend': 2.0, 'results': 0},
+                        {'date': '2026-01-02', 'spend': 5.0, 'results': 0},
                     ],
                 },
             ],
