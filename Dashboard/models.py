@@ -29,6 +29,15 @@ class DashboardUser(models.Model):
         return self.expired_at > timezone.now()
 
 
+class AdAccountQuerySet(models.QuerySet):
+    def accessible_to(self, dashboard_user):
+        if dashboard_user is None:
+            return self.none()
+        return self.filter(
+            models.Q(id_dashboard_user=dashboard_user) | models.Q(shared_dashboard_users=dashboard_user)
+        ).distinct()
+
+
 class AdAccount(models.Model):
     id_meta_ad_account = models.CharField(max_length=64, unique=True, db_index=True)
     name = models.CharField(max_length=255)
@@ -37,6 +46,13 @@ class AdAccount(models.Model):
         on_delete=models.CASCADE,
         related_name='ad_accounts',
     )
+    shared_dashboard_users = models.ManyToManyField(
+        DashboardUser,
+        related_name='shared_meta_ad_accounts',
+        blank=True,
+    )
+
+    objects = AdAccountQuerySet.as_manager()
 
     def __str__(self):
         return f'{self.name} ({self.id_meta_ad_account})'

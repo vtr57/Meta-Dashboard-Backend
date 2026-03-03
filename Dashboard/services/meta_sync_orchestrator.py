@@ -132,21 +132,31 @@ class MetaSyncOrchestrator:
             account_id = str(item.get('id') or '').strip()
             if not account_id:
                 continue
-            AdAccount.objects.update_or_create(
+            ad_account, created = AdAccount.objects.get_or_create(
                 id_meta_ad_account=account_id,
                 defaults={
                     'name': (item.get('name') or '').strip()[:255],
                     'id_dashboard_user': self.dashboard_user,
                 },
             )
+            next_name = (item.get('name') or '').strip()[:255]
+            if ad_account.name != next_name:
+                ad_account.name = next_name
+                ad_account.save(update_fields=['name'])
+            if not created and ad_account.id_dashboard_user_id != self.dashboard_user.id:
+                ad_account.shared_dashboard_users.add(self.dashboard_user)
             total += 1
         return {'ad_accounts_upserted': total}
+
+    def _ad_accounts_queryset(self):
+        assert self.dashboard_user
+        return AdAccount.objects.accessible_to(self.dashboard_user)
 
     def sync_campaigns(self) -> Dict:
         assert self.client and self.dashboard_user
         total = 0
         errors = 0
-        accounts = AdAccount.objects.filter(id_dashboard_user=self.dashboard_user).only('id', 'id_meta_ad_account')
+        accounts = self._ad_accounts_queryset().only('id', 'id_meta_ad_account')
         batch_requests = [
             {
                 'relative_url': self._to_batch_relative_url(
@@ -205,12 +215,11 @@ class MetaSyncOrchestrator:
         total = 0
         skipped = 0
         errors = 0
-        accounts = AdAccount.objects.filter(id_dashboard_user=self.dashboard_user).only('id_meta_ad_account')
+        accessible_accounts = self._ad_accounts_queryset()
+        accounts = accessible_accounts.only('id_meta_ad_account')
         campaign_map = {
             c.id_meta_campaign: c.id
-            for c in Campaign.objects.filter(id_meta_ad_account__id_dashboard_user=self.dashboard_user).only(
-                'id', 'id_meta_campaign'
-            )
+            for c in Campaign.objects.filter(id_meta_ad_account__in=accessible_accounts).only('id', 'id_meta_campaign')
         }
         batch_requests = [
             {
@@ -280,12 +289,13 @@ class MetaSyncOrchestrator:
         total = 0
         skipped = 0
         errors = 0
-        accounts = AdAccount.objects.filter(id_dashboard_user=self.dashboard_user).only('id_meta_ad_account')
+        accessible_accounts = self._ad_accounts_queryset()
+        accounts = accessible_accounts.only('id_meta_ad_account')
         adset_map = {
             a.id_meta_adset: a.id
-            for a in AdSet.objects.filter(
-                id_meta_campaign__id_meta_ad_account__id_dashboard_user=self.dashboard_user
-            ).only('id', 'id_meta_adset')
+            for a in AdSet.objects.filter(id_meta_campaign__id_meta_ad_account__in=accessible_accounts).only(
+                'id', 'id_meta_adset'
+            )
         }
 
         batch_requests = [
@@ -350,9 +360,10 @@ class MetaSyncOrchestrator:
 
     def sync_ad_insights(self, since: date, until: date) -> Dict:
         assert self.client and self.dashboard_user
-        accounts = list(AdAccount.objects.filter(id_dashboard_user=self.dashboard_user).only('id_meta_ad_account'))
+        accessible_accounts = self._ad_accounts_queryset()
+        accounts = list(accessible_accounts.only('id_meta_ad_account'))
         ads_qs = Ad.objects.filter(
-            id_meta_adset__id_meta_campaign__id_meta_ad_account__id_dashboard_user=self.dashboard_user
+            id_meta_adset__id_meta_campaign__id_meta_ad_account__in=accessible_accounts
         ).values(
             'id',
             'id_meta_ad',

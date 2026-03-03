@@ -343,17 +343,22 @@ def _get_meta_filter_values(request):
     }
 
 
+def _ad_accounts_for_dashboard_user(dashboard_user: DashboardUser):
+    return AdAccount.objects.accessible_to(dashboard_user)
+
+
 def _build_meta_insight_queryset(dashboard_user: DashboardUser, filters: dict):
     ad_account_id = filters['ad_account_id']
     campaign_id = filters['campaign_id']
     adset_id = filters['adset_id']
     ad_id = filters['ad_id']
+    accessible_accounts = _ad_accounts_for_dashboard_user(dashboard_user)
 
     if ad_id:
         level = 'ad'
         qs = AdInsightDaily.objects.filter(
             id_meta_ad__id_meta_ad=ad_id,
-            id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__id_dashboard_user=dashboard_user,
+            id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
         )
         if ad_account_id:
             qs = qs.filter(
@@ -369,7 +374,7 @@ def _build_meta_insight_queryset(dashboard_user: DashboardUser, filters: dict):
         level = 'adset'
         qs = AdSetInsightDaily.objects.filter(
             id_meta_adset__id_meta_adset=adset_id,
-            id_meta_adset__id_meta_campaign__id_meta_ad_account__id_dashboard_user=dashboard_user,
+            id_meta_adset__id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
         )
         if ad_account_id:
             qs = qs.filter(id_meta_adset__id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
@@ -381,14 +386,14 @@ def _build_meta_insight_queryset(dashboard_user: DashboardUser, filters: dict):
         level = 'campaign'
         qs = CampaignInsightDaily.objects.filter(
             id_meta_campaign__id_meta_campaign=campaign_id,
-            id_meta_campaign__id_meta_ad_account__id_dashboard_user=dashboard_user,
+            id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
         )
         if ad_account_id:
             qs = qs.filter(id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
         return level, qs
 
     level = 'ad_account'
-    qs = CampaignInsightDaily.objects.filter(id_meta_campaign__id_meta_ad_account__id_dashboard_user=dashboard_user)
+    qs = CampaignInsightDaily.objects.filter(id_meta_campaign__id_meta_ad_account__in=accessible_accounts)
     if ad_account_id:
         qs = qs.filter(id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
     return level, qs
@@ -398,9 +403,10 @@ def _build_meta_specific_ad_queryset(dashboard_user: DashboardUser, filters: dic
     ad_account_id = filters['ad_account_id']
     campaign_id = filters['campaign_id']
     adset_id = filters['adset_id']
+    accessible_accounts = _ad_accounts_for_dashboard_user(dashboard_user)
 
     qs = AdInsightDaily.objects.filter(
-        id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__id_dashboard_user=dashboard_user
+        id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__in=accessible_accounts
     ).filter(id_meta_ad__effective_status__iexact='active')
     level = 'ad_account'
 
@@ -427,7 +433,7 @@ def meta_filters(request):
     campaign_id = str(request.query_params.get('campaign_id') or '').strip()
     adset_id = str(request.query_params.get('adset_id') or '').strip()
 
-    ad_accounts_qs = AdAccount.objects.filter(id_dashboard_user=dashboard_user).order_by('name', 'id_meta_ad_account')
+    ad_accounts_qs = _ad_accounts_for_dashboard_user(dashboard_user).order_by('name', 'id_meta_ad_account')
     campaigns_qs = Campaign.objects.filter(id_meta_ad_account__in=ad_accounts_qs)
     if ad_account_id:
         campaigns_qs = campaigns_qs.filter(id_meta_ad_account__id_meta_ad_account=ad_account_id)
@@ -504,7 +510,7 @@ def meta_anotacoes(request):
             request.query_params.get('ad_account_id') or request.query_params.get('id_meta_ad_account') or ''
         ).strip()
         anotacoes_qs = Anotacoes.objects.filter(
-            id_meta_ad_account__id_dashboard_user=dashboard_user
+            id_meta_ad_account__in=_ad_accounts_for_dashboard_user(dashboard_user)
         ).select_related('id_meta_ad_account')
         if ad_account_id:
             anotacoes_qs = anotacoes_qs.filter(id_meta_ad_account__id_meta_ad_account=ad_account_id)
@@ -529,7 +535,7 @@ def meta_anotacao_delete(request, anotacao_id: int):
 
     anotacao = Anotacoes.objects.filter(
         id=anotacao_id,
-        id_meta_ad_account__id_dashboard_user=dashboard_user,
+        id_meta_ad_account__in=_ad_accounts_for_dashboard_user(dashboard_user),
     ).first()
     if anotacao is None:
         return Response({'detail': 'Anotacao nao encontrada.'}, status=status.HTTP_404_NOT_FOUND)

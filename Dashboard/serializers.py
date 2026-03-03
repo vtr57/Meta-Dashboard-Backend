@@ -18,9 +18,9 @@ class AnotacoesSerializer(serializers.ModelSerializer):
         super().__init__(*args, **kwargs)
         dashboard_user = self.context.get('dashboard_user')
         if isinstance(dashboard_user, DashboardUser):
-            self.fields['id_meta_ad_account'].queryset = AdAccount.objects.filter(
-                id_dashboard_user=dashboard_user
-            ).order_by('id_meta_ad_account')
+            self.fields['id_meta_ad_account'].queryset = AdAccount.objects.accessible_to(dashboard_user).order_by(
+                'id_meta_ad_account'
+            )
 
 
 class MetaSpecificTimeseriesDailySerializer(serializers.Serializer):

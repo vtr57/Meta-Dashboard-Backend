@@ -456,6 +456,33 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertIsNone(rows_by_ad[1]['cpr'])
         self.assertTrue(all(row['ad_id'] != 'ad_202' for row in rows_by_ad))
 
+    def test_shared_ad_account_is_visible_to_second_user(self):
+        other_user = User.objects.create_user(username='carol-shared', password='Secret123!')
+        other_dashboard_user = DashboardUser.objects.create(
+            user=other_user,
+            id_meta_user='meta-user-shared',
+            long_access_token='token',
+        )
+        self.ad_account.shared_dashboard_users.add(other_dashboard_user)
+
+        other_client = Client()
+        other_client.force_login(other_user)
+
+        filters_response = other_client.get('/api/meta/filters')
+        self.assertEqual(filters_response.status_code, 200)
+        self.assertEqual(filters_response.json()['ad_accounts'][0]['id_meta_ad_account'], 'act_200')
+
+        timeseries_response = other_client.get(
+            '/api/meta/timeseries',
+            {
+                'ad_account_id': 'act_200',
+                'date_start': '2026-01-01',
+                'date_end': '2026-01-02',
+            },
+        )
+        self.assertEqual(timeseries_response.status_code, 200)
+        self.assertEqual(len(timeseries_response.json()['series']), 2)
+
 
 class MetaAnotacoesEndpointsTests(TestCase):
     def setUp(self):
@@ -527,6 +554,28 @@ class MetaAnotacoesEndpointsTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('id_meta_ad_account', response.json())
         self.assertEqual(Anotacoes.objects.filter(observacoes='Tentativa invalida.').count(), 0)
+
+    def test_shared_ad_account_accepts_anotacao_from_second_user(self):
+        self.ad_account.shared_dashboard_users.add(self.other_dashboard_user)
+
+        other_client = Client()
+        other_client.force_login(self.other_user)
+
+        response = other_client.post(
+            '/api/meta/anotacoes',
+            data=json.dumps(
+                {
+                    'id_meta_ad_account': self.ad_account.id_meta_ad_account,
+                    'observacoes': 'Observacao compartilhada.',
+                }
+            ),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            response.json()['anotacao']['id_meta_ad_account'],
+            self.ad_account.id_meta_ad_account,
+        )
 
     def test_delete_anotacao_for_current_user(self):
         anotacao = Anotacoes.objects.create(
@@ -708,6 +757,29 @@ class MetaBatchEntityExtractionTests(TestCase):
         self.assertTrue(Campaign.objects.filter(id_meta_campaign='cmp_batch_1').exists())
         self.assertTrue(AdSet.objects.filter(id_meta_adset='ads_batch_1').exists())
         self.assertTrue(Ad.objects.filter(id_meta_ad='ad_batch_1').exists())
+
+    def test_sync_ad_accounts_preserves_owner_and_grants_shared_access(self):
+        other_user = User.objects.create_user(username='batch-shared', password='Secret123!')
+        other_dashboard_user = DashboardUser.objects.create(
+            user=other_user,
+            id_meta_user='meta-user-batch-shared',
+            long_access_token='token',
+        )
+
+        class FakeClient:
+            def paginate(self, *args, **kwargs):
+                return iter([{'id': 'act_900', 'name': 'Conta 900 Atualizada'}])
+
+        orchestrator = MetaSyncOrchestrator(sync_run_id=self.sync_run.id, dashboard_user_id=other_dashboard_user.id)
+        orchestrator.dashboard_user = other_dashboard_user
+        orchestrator.client = FakeClient()
+
+        result = orchestrator.sync_ad_accounts()
+
+        self.assertEqual(result['ad_accounts_upserted'], 1)
+        self.ad_account.refresh_from_db()
+        self.assertEqual(self.ad_account.id_dashboard_user, self.dashboard_user)
+        self.assertTrue(self.ad_account.shared_dashboard_users.filter(id=other_dashboard_user.id).exists())
 
 
 class MetaSyncOrchestratorPathTests(TestCase):
