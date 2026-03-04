@@ -169,3 +169,57 @@ class ClientesEndpointRefreshSaldoTests(TestCase):
         self.assertEqual(payload['clientes'][0]['id'], self.cliente.id)
         self.assertIn('saldo_sync', payload)
         self.assertTrue(payload['saldo_sync']['skipped'])
+
+
+class ClientesSharedAdAccountsAccessTests(TestCase):
+    def setUp(self):
+        self.owner_user = User.objects.create_user(username='owner-user', password='Secret123!')
+        self.owner_dashboard_user = DashboardUser.objects.create(
+            user=self.owner_user,
+            id_meta_user='meta-owner-user',
+            long_access_token='owner-long-token',
+        )
+        self.shared_user = User.objects.create_user(username='shared-user', password='Secret123!')
+        self.shared_dashboard_user = DashboardUser.objects.create(
+            user=self.shared_user,
+            id_meta_user='meta-shared-user',
+            long_access_token='shared-long-token',
+        )
+        self.shared_ad_account = AdAccount.objects.create(
+            id_meta_ad_account='act_shared_123',
+            name='Conta Compartilhada',
+            id_dashboard_user=self.owner_dashboard_user,
+        )
+        self.shared_ad_account.shared_dashboard_users.add(self.shared_dashboard_user)
+        self.client.force_login(self.shared_user)
+
+    def test_ad_accounts_endpoint_lists_shared_ad_accounts(self):
+        response = self.client.get('/api/empresa/ad-accounts')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['total'], 1)
+        self.assertEqual(payload['ad_accounts'][0]['id'], self.shared_ad_account.id)
+        self.assertEqual(payload['ad_accounts'][0]['id_meta_ad_account'], self.shared_ad_account.id_meta_ad_account)
+
+    @patch('empresa.models.timezone.localdate', return_value=date(2026, 3, 4))
+    def test_post_clientes_accepts_shared_ad_account(self, _mocked_localdate):
+        response = self.client.post(
+            '/api/empresa/clientes',
+            {
+                'name': 'Cliente Compartilhado',
+                'nome': str(self.shared_ad_account.id),
+                'nicho_atuacao': 'Servico',
+                'valor_investido': '200.00',
+                'forma_pagamento': Cliente.FORMA_PAGAMENTO_PIX,
+                'periodo_cobranca': Cliente.PERIODO_COBRANCA_MENSAL,
+                'saldo_atual': '100.00',
+                'gasto_diario': '10.00',
+                'data_renovacao_creditos': '2026-03-20',
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload['cliente']['nome_id'], self.shared_ad_account.id)
+        self.assertEqual(payload['cliente']['id_meta_ad_account'], self.shared_ad_account.id_meta_ad_account)

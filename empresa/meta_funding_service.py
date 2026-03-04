@@ -2,7 +2,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Iterable, List, Optional
 
-from Dashboard.models import DashboardUser
+from Dashboard.models import AdAccount, DashboardUser
 from Dashboard.services.meta_client import MetaClientError, MetaGraphClient
 
 from .models import Cliente
@@ -87,11 +87,8 @@ def sync_clientes_saldo_atual_from_meta(user, *, batch_size: int = 50) -> Dict:
     if skip_response is not None:
         return skip_response
 
-    clientes = list(
-        Cliente.objects.select_related('nome')
-        .filter(nome__id_dashboard_user=dashboard_user)
-        .order_by('-created_at')
-    )
+    accessible_ad_accounts = AdAccount.objects.accessible_to(dashboard_user)
+    clientes = list(Cliente.objects.select_related('nome').filter(nome__in=accessible_ad_accounts).order_by('-created_at'))
     if not clientes:
         return {
             'updated_clientes': 0,

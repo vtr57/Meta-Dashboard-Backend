@@ -6,13 +6,18 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from Dashboard.models import AdAccount
+from Dashboard.models import AdAccount, DashboardUser
 
 from .models import Cliente
 from .meta_funding_service import sync_clientes_saldo_atual_from_meta
 
 
 logger = logging.getLogger(__name__)
+
+
+def _ad_accounts_for_user(user):
+    dashboard_user = DashboardUser.objects.filter(user=user).first()
+    return AdAccount.objects.accessible_to(dashboard_user)
 
 
 def _parse_ids_param(raw_ids: str):
@@ -109,11 +114,8 @@ def clientes(request):
                     'detail': 'Falha inesperada ao sincronizar saldo_atual.',
                 }
 
-        queryset = (
-            Cliente.objects.select_related('nome')
-            .filter(nome__id_dashboard_user__user=request.user)
-            .order_by('-created_at')
-        )
+        accessible_ad_accounts = _ad_accounts_for_user(request.user)
+        queryset = Cliente.objects.select_related('nome').filter(nome__in=accessible_ad_accounts).order_by('-created_at')
         raw_ids = str(request.query_params.get('ids') or '').strip()
         if raw_ids:
             parsed_ids = _parse_ids_param(raw_ids)
@@ -145,10 +147,8 @@ def clientes(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        queryset = Cliente.objects.filter(
-            id__in=parsed_ids,
-            nome__id_dashboard_user__user=request.user,
-        )
+        accessible_ad_accounts = _ad_accounts_for_user(request.user)
+        queryset = Cliente.objects.filter(id__in=parsed_ids, nome__in=accessible_ad_accounts)
         deleted_count, _ = queryset.delete()
 
         return Response(
@@ -182,10 +182,7 @@ def clientes(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    ad_account = AdAccount.objects.filter(
-        id=ad_account_id,
-        id_dashboard_user__user=request.user,
-    ).first()
+    ad_account = _ad_accounts_for_user(request.user).filter(id=ad_account_id).first()
     if ad_account is None:
         return Response(
             {'detail': 'AdAccount nao encontrado para o usuario autenticado.'},
@@ -239,7 +236,7 @@ def clientes(request):
 def cliente_detail(request, cliente_id: int):
     cliente = (
         Cliente.objects.select_related('nome')
-        .filter(id=cliente_id, nome__id_dashboard_user__user=request.user)
+        .filter(id=cliente_id, nome__in=_ad_accounts_for_user(request.user))
         .first()
     )
     if cliente is None:
@@ -275,10 +272,7 @@ def cliente_detail(request, cliente_id: int):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        ad_account = AdAccount.objects.filter(
-            id=ad_account_id,
-            id_dashboard_user__user=request.user,
-        ).first()
+        ad_account = _ad_accounts_for_user(request.user).filter(id=ad_account_id).first()
         if ad_account is None:
             return Response(
                 {'detail': 'AdAccount nao encontrado para o usuario autenticado.'},
@@ -351,7 +345,7 @@ def cliente_detail(request, cliente_id: int):
 @permission_classes([IsAuthenticated])
 def empresa_ad_accounts(request):
     ad_accounts = (
-        AdAccount.objects.filter(id_dashboard_user__user=request.user)
+        _ad_accounts_for_user(request.user)
         .order_by('name')
         .values('id', 'name', 'id_meta_ad_account')
     )
