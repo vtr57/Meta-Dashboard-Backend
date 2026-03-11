@@ -44,6 +44,9 @@ def _run_sync_in_background(
     dashboard_user_id: int,
     sync_scope: str = 'all',
     insights_days_override: Optional[int] = None,
+    instagram_account_id: Optional[str] = None,
+    date_start=None,
+    date_end=None,
 ) -> None:
     try:
         MetaSyncOrchestrator(
@@ -51,6 +54,9 @@ def _run_sync_in_background(
             dashboard_user_id=dashboard_user_id,
             sync_scope=sync_scope,
             insights_days_override=insights_days_override,
+            instagram_account_id=instagram_account_id,
+            date_start=date_start,
+            date_end=date_end,
         ).run()
     except Exception:
         logger.exception('Unexpected failure in sync background thread.')
@@ -120,6 +126,43 @@ def meta_sync_start_instagram(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+def instagram_sync_selected(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    if not dashboard_user.has_valid_long_token():
+        return Response(
+            {
+                'detail': 'Long token ausente ou expirado. Reconecte antes de sincronizar.',
+                'sync_requires_reconnect': True,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    instagram_account_id = str(request.data.get('instagram_account_id') or '').strip()
+    if not instagram_account_id:
+        return Response({'detail': 'Selecione uma conta de Instagram.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    account = _instagram_accounts_queryset(dashboard_user).filter(id_meta_instagram=instagram_account_id).first()
+    if account is None:
+        return Response({'detail': 'Conta de Instagram invalida para este usuario.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    date_start, date_end, date_error = _parse_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    return _start_sync(
+        request,
+        sync_scope='instagram',
+        instagram_account_id=account.id_meta_instagram,
+        date_start=date_start,
+        date_end=date_end,
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def meta_sync_start_insights_7d(request):
     return _start_sync(request, sync_scope='all', insights_days_override=7)
 
@@ -130,7 +173,14 @@ def meta_sync_start_insights_1d(request):
     return _start_sync(request, sync_scope='meta', insights_days_override=1)
 
 
-def _start_sync(request, sync_scope: str, insights_days_override: Optional[int] = None):
+def _start_sync(
+    request,
+    sync_scope: str,
+    insights_days_override: Optional[int] = None,
+    instagram_account_id: Optional[str] = None,
+    date_start=None,
+    date_end=None,
+):
     dashboard_user = DashboardUser.objects.filter(user=request.user).first()
     if dashboard_user is None:
         return Response(
@@ -154,13 +204,24 @@ def _start_sync(request, sync_scope: str, insights_days_override: Optional[int] 
     SyncLog.objects.create(
         sync_run=sync_run,
         entidade='sync_owner',
-        mensagem=f'user_id={request.user.id};dashboard_user_id={dashboard_user.id}',
+        mensagem=(
+            f'user_id={request.user.id};dashboard_user_id={dashboard_user.id};'
+            f'instagram_account_id={instagram_account_id or ""};'
+            f'date_start={date_start.isoformat() if date_start else ""};'
+            f'date_end={date_end.isoformat() if date_end else ""}'
+        ),
     )
     SyncLog.objects.create(
         sync_run=sync_run,
         entidade='sync',
         mensagem=(
             f'Sincronizacao enfileirada. Escopo={sync_scope}.'
+            + (f' Conta Instagram={instagram_account_id}.' if instagram_account_id else '')
+            + (
+                f' Periodo={date_start.isoformat()}..{date_end.isoformat()}.'
+                if date_start is not None and date_end is not None
+                else ''
+            )
             + (
                 f' Janela de insights: ultimos {insights_days_override} dias.'
                 if insights_days_override is not None
@@ -171,7 +232,7 @@ def _start_sync(request, sync_scope: str, insights_days_override: Optional[int] 
 
     thread = threading.Thread(
         target=_run_sync_in_background,
-        args=(sync_run.id, dashboard_user.id, sync_scope, insights_days_override),
+        args=(sync_run.id, dashboard_user.id, sync_scope, insights_days_override, instagram_account_id, date_start, date_end),
         daemon=True,
         name=f'meta-sync-{sync_scope}-{sync_run.id}',
     )
@@ -184,6 +245,9 @@ def _start_sync(request, sync_scope: str, insights_days_override: Optional[int] 
             'status': sync_run.status,
             'sync_scope': sync_scope,
             'insights_days_override': insights_days_override,
+            'instagram_account_id': instagram_account_id,
+            'date_start': date_start,
+            'date_end': date_end,
             'sync_requires_reconnect': False,
         },
         status=status.HTTP_202_ACCEPTED,
@@ -306,8 +370,19 @@ def _meta_spend_results_correlation(qs) -> Optional[float]:
 
 def _parse_date_range(request):
     today = timezone.localdate()
-    start_raw = request.query_params.get('date_start') or request.query_params.get('start_date')
-    end_raw = request.query_params.get('date_end') or request.query_params.get('end_date')
+    request_data = getattr(request, 'data', {}) if hasattr(request, 'data') else {}
+    start_raw = (
+        request.query_params.get('date_start')
+        or request.query_params.get('start_date')
+        or request_data.get('date_start')
+        or request_data.get('start_date')
+    )
+    end_raw = (
+        request.query_params.get('date_end')
+        or request.query_params.get('end_date')
+        or request_data.get('date_end')
+        or request_data.get('end_date')
+    )
     start = parse_date(start_raw) if start_raw else None
     end = parse_date(end_raw) if end_raw else None
 

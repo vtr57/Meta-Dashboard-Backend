@@ -5,6 +5,8 @@ from . import api_views
 urlpatterns = [
     path('accounts', api_views.instagram_accounts, name='instagram-accounts'),
     path('accounts/', api_views.instagram_accounts, name='instagram-accounts-slash'),
+    path('sync-selected', api_views.instagram_sync_selected, name='instagram-sync-selected'),
+    path('sync-selected/', api_views.instagram_sync_selected, name='instagram-sync-selected-slash'),
     path('kpis', api_views.instagram_kpis, name='instagram-kpis'),
     path('kpis/', api_views.instagram_kpis, name='instagram-kpis-slash'),
     path('timeseries', api_views.instagram_timeseries, name='instagram-timeseries'),

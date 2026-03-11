@@ -46,11 +46,17 @@ class MetaSyncOrchestrator:
         dashboard_user_id: int,
         sync_scope: str = SCOPE_ALL,
         insights_days_override: Optional[int] = None,
+        instagram_account_id: Optional[str] = None,
+        date_start: Optional[date] = None,
+        date_end: Optional[date] = None,
     ) -> None:
         self.sync_run_id = sync_run_id
         self.dashboard_user_id = dashboard_user_id
         self.sync_scope = str(sync_scope or self.SCOPE_ALL).strip().lower()
         self.insights_days_override = self._normalize_insights_days_override(insights_days_override)
+        self.instagram_account_id = str(instagram_account_id or '').strip() or None
+        self.date_start = date_start
+        self.date_end = date_end
         self.sync_run: Optional[SyncRun] = None
         self.dashboard_user: Optional[DashboardUser] = None
         self.client: Optional[MetaGraphClient] = None
@@ -81,9 +87,13 @@ class MetaSyncOrchestrator:
                 return
 
             self._log('sync', f'Sincronizacao iniciada. Escopo={self.sync_scope}.')
+            if self.instagram_account_id:
+                self._log('sync', f'Sincronizacao filtrada para instagram_account_id={self.instagram_account_id}.')
 
             since, until = self._build_date_window()
-            if self.insights_days_override is not None:
+            if self.date_start is not None and self.date_end is not None:
+                self._log('sync', f'Janela de extracao customizada: {since.isoformat()} ate {until.isoformat()}.')
+            elif self.insights_days_override is not None:
                 self._log(
                     'sync',
                     (
@@ -504,6 +514,22 @@ class MetaSyncOrchestrator:
             page_id = str(item.get('id') or '').strip()
             if not page_id:
                 continue
+            if self.instagram_account_id:
+                ig_info = item.get('instagram_business_account') or {}
+                ig_id = str(ig_info.get('id') or '').strip()
+                if not ig_id:
+                    detail = self.client.request_with_retry(
+                        'GET',
+                        f'{page_id}',
+                        params={'fields': 'instagram_business_account{id,username}'},
+                        entity='facebook_pages',
+                    )
+                    ig_info = (detail or {}).get('instagram_business_account') or {}
+                    ig_id = str(ig_info.get('id') or '').strip()
+                    if ig_info:
+                        item['instagram_business_account'] = ig_info
+                if ig_id != self.instagram_account_id:
+                    continue
             page_name = (item.get('name') or '').strip()[:255]
             FacebookPage.objects.update_or_create(
                 id_meta_page=page_id,
@@ -525,6 +551,8 @@ class MetaSyncOrchestrator:
     ) -> Dict:
         assert self.client and self.dashboard_user
         pages = FacebookPage.objects.filter(dashboard_user_id=self.dashboard_user).only('id', 'id_meta_page', 'name')
+        if self.instagram_account_id:
+            pages = pages.filter(instagram_accounts__id_meta_instagram=self.instagram_account_id)
 
         upserted = 0
         with_insights = 0
@@ -582,6 +610,8 @@ class MetaSyncOrchestrator:
         accounts = InstagramAccount.objects.filter(id_page__dashboard_user_id=self.dashboard_user).only(
             'id', 'id_meta_instagram'
         )
+        if self.instagram_account_id:
+            accounts = accounts.filter(id_meta_instagram=self.instagram_account_id)
 
         media_upserts = 0
         media_insight_updates = 0
@@ -701,6 +731,8 @@ class MetaSyncOrchestrator:
         )
 
     def _build_date_window(self) -> Tuple[date, date]:
+        if self.date_start is not None and self.date_end is not None:
+            return self.date_start, self.date_end
         today = timezone.localdate()
         if self.insights_days_override is not None:
             return today - timedelta(days=self.insights_days_override), today

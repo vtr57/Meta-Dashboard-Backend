@@ -610,6 +610,16 @@ class MetaSyncStartScopeEndpointsTests(TestCase):
             id_meta_user='meta-user-sync-scope',
             long_access_token='token',
         )
+        self.page = FacebookPage.objects.create(
+            id_meta_page='page_sync_1',
+            name='Pagina Sync',
+            dashboard_user_id=self.dashboard_user,
+        )
+        self.instagram_account = InstagramAccount.objects.create(
+            id_meta_instagram='ig_sync_1',
+            id_page=self.page,
+            name='perfil_sync',
+        )
 
     @patch('Dashboard.api_views.threading.Thread')
     def test_meta_sync_start_meta_endpoint(self, mocked_thread):
@@ -668,6 +678,36 @@ class MetaSyncStartScopeEndpointsTests(TestCase):
         self.assertEqual(args[1], self.dashboard_user.id)
         self.assertEqual(args[2], 'meta')
         self.assertEqual(args[3], 1)
+
+    @patch('Dashboard.api_views.threading.Thread')
+    def test_instagram_sync_selected_endpoint(self, mocked_thread):
+        mocked_thread.return_value = Mock()
+
+        response = self.client.post(
+            '/api/instagram/sync-selected',
+            data=json.dumps(
+                {
+                    'instagram_account_id': 'ig_sync_1',
+                    'date_start': '2026-02-01',
+                    'date_end': '2026-02-10',
+                }
+            ),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload['sync_scope'], 'instagram')
+        self.assertEqual(payload['instagram_account_id'], 'ig_sync_1')
+        self.assertEqual(payload['date_start'], '2026-02-01')
+        self.assertEqual(payload['date_end'], '2026-02-10')
+
+        args = mocked_thread.call_args.kwargs['args']
+        self.assertEqual(args[1], self.dashboard_user.id)
+        self.assertEqual(args[2], 'instagram')
+        self.assertIsNone(args[3])
+        self.assertEqual(args[4], 'ig_sync_1')
+        self.assertEqual(args[5], date(2026, 2, 1))
+        self.assertEqual(args[6], date(2026, 2, 10))
 
 
 class MetaBatchEntityExtractionTests(TestCase):
@@ -816,6 +856,19 @@ class MetaSyncOrchestratorPathTests(TestCase):
         since, until = orchestrator._build_date_window()
         self.assertEqual(since, date(2026, 2, 16))
         self.assertEqual(until, date(2026, 2, 23))
+
+    def test_build_date_window_with_explicit_dates(self):
+        orchestrator = MetaSyncOrchestrator(
+            sync_run_id=1,
+            dashboard_user_id=1,
+            sync_scope='instagram',
+            instagram_account_id='ig_1',
+            date_start=date(2026, 2, 1),
+            date_end=date(2026, 2, 10),
+        )
+        since, until = orchestrator._build_date_window()
+        self.assertEqual(since, date(2026, 2, 1))
+        self.assertEqual(until, date(2026, 2, 10))
 
     @patch('Dashboard.services.meta_sync_orchestrator.timezone.localdate', return_value=date(2026, 2, 20))
     def test_fetch_instagram_account_insights_clamps_since_to_two_years(self, _mocked_today):
