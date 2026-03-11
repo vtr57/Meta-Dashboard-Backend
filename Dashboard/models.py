@@ -223,6 +223,7 @@ class InstagramAccount(models.Model):
     impressions = models.PositiveBigIntegerField(null=True, blank=True)
     profile_views = models.PositiveBigIntegerField(null=True, blank=True)
     accounts_engaged = models.PositiveBigIntegerField(null=True, blank=True)
+    total_interactions = models.PositiveBigIntegerField(null=True, blank=True)
     follower_count = models.PositiveBigIntegerField(null=True, blank=True)
     follows_and_unfollows = models.IntegerField(null=True, blank=True)
 
@@ -240,6 +241,7 @@ class InstagramAccountInsightDaily(models.Model):
     impressions = models.PositiveBigIntegerField(default=0)
     profile_views = models.PositiveBigIntegerField(default=0)
     accounts_engaged = models.PositiveBigIntegerField(default=0)
+    total_interactions = models.PositiveBigIntegerField(default=0)
     follower_count = models.PositiveBigIntegerField(null=True, blank=True)
     follows_and_unfollows = models.IntegerField(default=0)
     created_at = models.DateField(db_index=True)

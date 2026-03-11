@@ -779,6 +779,10 @@ def _iter_dates(date_start, date_end):
 
 
 def _latest_instagram_followers_total(accounts_qs, date_start, date_end) -> int:
+    followers_by_date = _build_instagram_followers_timeseries(accounts_qs, date_start, date_end)
+    if followers_by_date:
+        return _to_int(followers_by_date.get(date_end))
+
     latest_by_account = {}
     rows = (
         _instagram_daily_insights_queryset(accounts_qs, date_start, date_end)
@@ -798,6 +802,80 @@ def _latest_instagram_followers_total(accounts_qs, date_start, date_end) -> int:
 
     snapshot_totals = accounts_qs.aggregate(follower_count_total=Sum('follower_count'))
     return _to_int(snapshot_totals['follower_count_total'])
+
+
+def _build_instagram_followers_timeseries(accounts_qs, date_start, date_end):
+    dates = list(_iter_dates(date_start, date_end))
+    if not dates:
+        return {}
+
+    history_end = max(date_end, timezone.localdate())
+    rows = (
+        InstagramAccountInsightDaily.objects.filter(
+            id_meta_instagram__in=accounts_qs,
+            created_at__gte=date_start,
+            created_at__lte=history_end,
+        )
+        .values('id_meta_instagram_id', 'created_at', 'follower_count', 'follows_and_unfollows')
+        .order_by('id_meta_instagram_id', 'created_at')
+    )
+
+    rows_by_account = {}
+    for row in rows:
+        rows_by_account.setdefault(row['id_meta_instagram_id'], []).append(row)
+
+    totals_by_date = {current_date: 0 for current_date in dates}
+    has_followers = False
+
+    for account in accounts_qs.only('id', 'follower_count'):
+        account_rows = rows_by_account.get(account.id, [])
+        delta_by_date = {row['created_at']: _to_int(row['follows_and_unfollows']) for row in account_rows}
+        direct_followers_by_date = {
+            row['created_at']: _to_int(row['follower_count'])
+            for row in account_rows
+            if row['follower_count'] is not None
+        }
+
+        if direct_followers_by_date:
+            anchor_date = max(direct_followers_by_date.keys())
+            anchor_count = direct_followers_by_date[anchor_date]
+        elif account.follower_count is not None:
+            anchor_date = date_end
+            anchor_count = _to_int(account.follower_count)
+        else:
+            continue
+
+        account_series = {anchor_date: anchor_count}
+
+        current_value = anchor_count
+        current_date = anchor_date + timedelta(days=1)
+        while current_date <= history_end:
+            current_value += delta_by_date.get(current_date, 0)
+            account_series[current_date] = current_value
+            current_date += timedelta(days=1)
+
+        current_value = anchor_count
+        current_date = anchor_date - timedelta(days=1)
+        while current_date >= date_start:
+            next_date = current_date + timedelta(days=1)
+            current_value -= delta_by_date.get(next_date, 0)
+            account_series[current_date] = current_value
+            current_date -= timedelta(days=1)
+
+        for direct_date, direct_value in direct_followers_by_date.items():
+            if date_start <= direct_date <= history_end:
+                account_series[direct_date] = direct_value
+
+        for current_date in dates:
+            follower_value = account_series.get(current_date)
+            if follower_value is None:
+                continue
+            totals_by_date[current_date] += follower_value
+            has_followers = True
+
+    if not has_followers:
+        return {}
+    return totals_by_date
 
 
 @api_view(['GET'])
@@ -846,48 +924,30 @@ def instagram_kpis(request):
         accounts_qs = accounts_qs.filter(id_meta_instagram=instagram_account_id)
 
     daily_qs = _instagram_daily_insights_queryset(accounts_qs, date_start, date_end)
-    media_qs = MediaInstagram.objects.filter(id_meta_instagram__in=accounts_qs)
-    media_qs = media_qs.filter(timestamp__date__gte=date_start, timestamp__date__lte=date_end)
-
-    media_totals = media_qs.aggregate(
-        reach_total=Sum('reach'),
-        views_total=Sum('views'),
-        likes_total=Sum('likes'),
-        comments_total=Sum('comments'),
-        saved_total=Sum('saved'),
-        shares_total=Sum('shares'),
-        plays_total=Sum('plays'),
-    )
     daily_totals = daily_qs.aggregate(
         accounts_reached_total=Sum('accounts_reached'),
         impressions_total=Sum('impressions'),
-        profile_views_total=Sum('profile_views'),
         accounts_engaged_total=Sum('accounts_engaged'),
-        follows_and_unfollows_total=Sum('follows_and_unfollows'),
+        total_interactions_total=Sum('total_interactions'),
     )
     snapshot_totals = accounts_qs.aggregate(
         accounts_reached_total=Sum('accounts_reached'),
         impressions_total=Sum('impressions'),
-        profile_views_total=Sum('profile_views'),
         accounts_engaged_total=Sum('accounts_engaged'),
-        follower_count_total=Sum('follower_count'),
-        follows_and_unfollows_total=Sum('follows_and_unfollows'),
+        total_interactions_total=Sum('total_interactions'),
     )
 
-    media_reach = _to_int(media_totals['reach_total'])
-    media_views = _to_int(media_totals['views_total'])
     daily_reach = _to_int(daily_totals['accounts_reached_total'])
     daily_impressions = _to_int(daily_totals['impressions_total'])
     snapshot_reach = _to_int(snapshot_totals['accounts_reached_total'])
     snapshot_impressions = _to_int(snapshot_totals['impressions_total'])
-    interactions = _to_int(daily_totals['accounts_engaged_total']) or _to_int(snapshot_totals['accounts_engaged_total'])
-    followers = _latest_instagram_followers_total(accounts_qs, date_start, date_end)
-
-    alcance = daily_reach if daily_reach > 0 else snapshot_reach if snapshot_reach > 0 else media_reach
-    impressoes = (
-        daily_impressions
-        if daily_impressions > 0
-        else snapshot_impressions if snapshot_impressions > 0 else media_views
+    alcance = daily_reach if daily_reach > 0 else snapshot_reach
+    impressoes = daily_impressions if daily_impressions > 0 else snapshot_impressions
+    contas_engajadas = _to_int(daily_totals['accounts_engaged_total']) or _to_int(
+        snapshot_totals['accounts_engaged_total']
+    )
+    total_interacoes = _to_int(daily_totals['total_interactions_total']) or _to_int(
+        snapshot_totals['total_interactions_total']
     )
 
     return Response(
@@ -898,20 +958,8 @@ def instagram_kpis(request):
             'kpis': {
                 'alcance': alcance,
                 'impressoes': impressoes,
-                'curtidas': _to_int(media_totals['likes_total']),
-                'comentarios': _to_int(media_totals['comments_total']),
-                'salvos': _to_int(media_totals['saved_total']),
-                'compartilhamentos': _to_int(media_totals['shares_total']),
-                'plays': _to_int(media_totals['plays_total']),
-                'interacoes': interactions,
-                'seguidores': followers,
-                'profile_views': _to_int(daily_totals['profile_views_total']) or _to_int(snapshot_totals['profile_views_total']),
-                'accounts_engaged': interactions,
-                'follower_count': followers,
-                'follows_and_unfollows': (
-                    _to_int(daily_totals['follows_and_unfollows_total'])
-                    or _to_int(snapshot_totals['follows_and_unfollows_total'])
-                ),
+                'contas_engajadas': contas_engajadas,
+                'total_interacoes': total_interacoes,
             },
         },
         status=status.HTTP_200_OK,
@@ -939,22 +987,20 @@ def instagram_timeseries(request):
         .values('created_at')
         .annotate(
             impressions_total=Sum('impressions'),
-            interactions_total=Sum('accounts_engaged'),
-            followers_total=Sum('follower_count'),
+            reach_total=Sum('accounts_reached'),
         )
         .order_by('created_at')
     )
     by_date = {row['created_at']: row for row in rows}
+    followers_by_date = _build_instagram_followers_timeseries(accounts_qs, date_start, date_end)
 
     timeseries = [
         {
             'date': current_date,
             'impressions': _to_int((by_date.get(current_date) or {}).get('impressions_total')),
-            'interactions': _to_int((by_date.get(current_date) or {}).get('interactions_total')),
-            'followers': (
-                None
-                if (by_date.get(current_date) or {}).get('followers_total') is None
-                else _to_int((by_date.get(current_date) or {}).get('followers_total'))
+            'reach': _to_int((by_date.get(current_date) or {}).get('reach_total')),
+            'follower_count': (
+                None if current_date not in followers_by_date else _to_int(followers_by_date.get(current_date))
             ),
         }
         for current_date in _iter_dates(date_start, date_end)

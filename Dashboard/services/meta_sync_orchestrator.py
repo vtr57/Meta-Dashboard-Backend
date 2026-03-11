@@ -1045,8 +1045,9 @@ class MetaSyncOrchestrator:
             return {'data': []}
 
         metrics_regular = ['reach']
-        metrics_total_value = ['views', 'content_views', 'profile_views', 'accounts_engaged', 'follows_and_unfollows']
-        metrics = metrics_regular + metrics_total_value + ['follower_count']
+        metrics_total_value = ['views', 'content_views', 'profile_views', 'accounts_engaged', 'total_interactions']
+        metrics_with_breakdown = ['follows_and_unfollows']
+        metrics = metrics_regular + metrics_total_value + metrics_with_breakdown + ['follower_count']
         metric_entries: Dict[str, Dict] = {}
         date_windows = list(self._iter_day_chunks(effective_since, effective_until, max_span_days=29))
 
@@ -1101,13 +1102,45 @@ class MetaSyncOrchestrator:
                             f'Tentando fallback por metrica: {exc}'
                         ),
                     )
+            for metric in metrics_with_breakdown:
+                try:
+                    payload = self.client.request_with_retry(
+                        'GET',
+                        f'{ig_id}/insights',
+                        params={
+                            'metric': metric,
+                            **params_window,
+                            'metric_type': 'total_value',
+                            'breakdown': 'follow_type',
+                        },
+                        entity='instagram_account_insights',
+                    )
+                    merge_metric_entries(payload)
+                except MetaClientError as exc:
+                    self._log(
+                        'instagram_account_insights',
+                        (
+                            f'Falha na chamada com breakdown da conta {ig_id} '
+                            f'({window_since.isoformat()}..{window_until.isoformat()}) para {metric}. '
+                            f'Tentando fallback por metrica: {exc}'
+                        ),
+                    )
 
         missing_metrics = [metric for metric in metrics if metric not in metric_entries]
-        metrics_total_value_set = set(metrics_total_value)
+        metric_extra_params_map = {
+            **{metric: {'metric_type': 'total_value'} for metric in metrics_total_value},
+            **{
+                metric: {
+                    'metric_type': 'total_value',
+                    'breakdown': 'follow_type',
+                }
+                for metric in metrics_with_breakdown
+            },
+        }
         for metric in missing_metrics:
             if metric == 'follower_count':
                 continue
-            metric_extra_params = {'metric_type': 'total_value'} if metric in metrics_total_value_set else {}
+            metric_extra_params = metric_extra_params_map.get(metric, {})
             metric_error = None
             for window_since, window_until in date_windows:
                 try:
@@ -1244,6 +1277,8 @@ class MetaSyncOrchestrator:
             updates['profile_views'] = self._to_int(metric_map['profile_views'])
         if 'accounts_engaged' in metric_map:
             updates['accounts_engaged'] = self._to_int(metric_map['accounts_engaged'])
+        if 'total_interactions' in metric_map:
+            updates['total_interactions'] = self._to_int(metric_map['total_interactions'])
         if 'follower_count' in metric_map:
             updates['follower_count'] = self._to_int(metric_map['follower_count'])
         if 'follows_and_unfollows' in metric_map:
@@ -1263,6 +1298,7 @@ class MetaSyncOrchestrator:
                 ),
                 'profile_views': self._to_int(metrics.get('profile_views')),
                 'accounts_engaged': self._to_int(metrics.get('accounts_engaged')),
+                'total_interactions': self._to_int(metrics.get('total_interactions')),
                 'follower_count': (
                     None if metrics.get('follower_count') is None else self._to_int(metrics.get('follower_count'))
                 ),
@@ -1290,7 +1326,10 @@ class MetaSyncOrchestrator:
             for raw_point in values:
                 if not isinstance(raw_point, dict):
                     continue
-                parsed_value = self._extract_metric_value(raw_point.get('value'))
+                if metric_name == 'follows_and_unfollows':
+                    parsed_value = self._extract_follow_net_change(raw_point.get('value'))
+                else:
+                    parsed_value = self._extract_metric_value(raw_point.get('value'))
                 if parsed_value is None:
                     continue
                 parsed_values.append(parsed_value)
@@ -1331,6 +1370,49 @@ class MetaSyncOrchestrator:
         if parsed_datetime is not None:
             return parsed_datetime.date()
         return None
+
+    def _extract_follow_net_change(self, value):
+        if value in (None, ''):
+            return None
+        if isinstance(value, (int, float, Decimal)):
+            return int(value)
+        if isinstance(value, list):
+            total = 0
+            has_value = False
+            for item in value:
+                parsed_item = self._extract_follow_net_change(item)
+                if parsed_item is None:
+                    continue
+                total += parsed_item
+                has_value = True
+            return total if has_value else None
+        if isinstance(value, dict):
+            dimension_values = [str(item).lower() for item in value.get('dimension_values') or []]
+            dimension_text = ' '.join(dimension_values)
+            direct_numeric_value = self._extract_metric_value(value.get('value'))
+            direct_value = None
+            if direct_numeric_value is not None and any(token in dimension_text for token in ('unfollow', 'unfollowed')):
+                direct_value = -abs(direct_numeric_value)
+            elif direct_numeric_value is not None and 'follow' in dimension_text:
+                direct_value = abs(direct_numeric_value)
+            if direct_value is not None:
+                return direct_value
+
+            total = 0
+            has_nested = False
+            for nested_value in value.values():
+                parsed_nested = self._extract_follow_net_change(nested_value)
+                if parsed_nested is None:
+                    continue
+                total += parsed_nested
+                has_nested = True
+            if has_nested:
+                return total
+            return self._extract_metric_value(value)
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return None
 
     def _extract_metric_value(self, value):
         if isinstance(value, (int, float, Decimal)):

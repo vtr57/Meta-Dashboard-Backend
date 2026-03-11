@@ -930,6 +930,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
                 {'name': 'views', 'values': [{'value': '340'}]},
                 {'name': 'profile_views', 'values': [{'value': '22'}]},
                 {'name': 'accounts_engaged', 'values': [{'value': '18'}]},
+                {'name': 'total_interactions', 'values': [{'value': '44'}]},
                 {'name': 'follower_count', 'values': [{'value': '777'}]},
                 {'name': 'follows_and_unfollows', 'values': [{'value': {'count': 5}}]},
             ]
@@ -940,6 +941,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
         self.assertEqual(updates['impressions'], 340)
         self.assertEqual(updates['profile_views'], 22)
         self.assertEqual(updates['accounts_engaged'], 18)
+        self.assertEqual(updates['total_interactions'], 44)
         self.assertEqual(updates['follower_count'], 777)
         self.assertEqual(updates['follows_and_unfollows'], 5)
 
@@ -986,6 +988,13 @@ class MetaSyncOrchestratorPathTests(TestCase):
                     ],
                 },
                 {
+                    'name': 'total_interactions',
+                    'values': [
+                        {'value': '38', 'end_time': '2026-02-01T07:00:00+0000'},
+                        {'value': '49', 'end_time': '2026-02-02T07:00:00+0000'},
+                    ],
+                },
+                {
                     'name': 'follower_count',
                     'values': [
                         {'value': '700', 'end_time': '2026-02-01T07:00:00+0000'},
@@ -1006,6 +1015,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
                     'impressions': 120,
                     'profile_views': 0,
                     'accounts_engaged': 20,
+                    'total_interactions': 38,
                     'follower_count': 700,
                     'follows_and_unfollows': 0,
                 },
@@ -1015,6 +1025,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
                     'impressions': 140,
                     'profile_views': 0,
                     'accounts_engaged': 26,
+                    'total_interactions': 49,
                     'follower_count': 710,
                     'follows_and_unfollows': 0,
                 },
@@ -1051,6 +1062,19 @@ class MetaSyncOrchestratorPathTests(TestCase):
                         },
                     ],
                 },
+                {
+                    'name': 'total_interactions',
+                    'values': [
+                        {
+                            'value': {'total_value': {'value': 70}},
+                            'date_range': {'since': '2026-02-01', 'until': '2026-02-01'},
+                        },
+                        {
+                            'value': {'total_value': {'value': 81}},
+                            'date_range': {'since': '2026-02-02', 'until': '2026-02-02'},
+                        },
+                    ],
+                },
             ]
         }
 
@@ -1066,6 +1090,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
                     'impressions': 300,
                     'profile_views': 0,
                     'accounts_engaged': 33,
+                    'total_interactions': 70,
                     'follower_count': None,
                     'follows_and_unfollows': 0,
                 },
@@ -1075,6 +1100,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
                     'impressions': 420,
                     'profile_views': 0,
                     'accounts_engaged': 41,
+                    'total_interactions': 81,
                     'follower_count': None,
                     'follows_and_unfollows': 0,
                 },
@@ -1082,6 +1108,26 @@ class MetaSyncOrchestratorPathTests(TestCase):
         )
         self.assertEqual(updates['impressions'], 720)
         self.assertEqual(updates['accounts_engaged'], 74)
+        self.assertEqual(updates['total_interactions'], 151)
+
+    def test_extract_follow_net_change_supports_follow_type_breakdown(self):
+        orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
+        value = {
+            'total_value': {
+                'breakdowns': [
+                    {
+                        'dimension_values': ['follows'],
+                        'results': [{'dimension_values': ['follows'], 'value': 12}],
+                    },
+                    {
+                        'dimension_values': ['unfollows'],
+                        'results': [{'dimension_values': ['unfollows'], 'value': 4}],
+                    },
+                ]
+            }
+        }
+
+        self.assertEqual(orchestrator._extract_follow_net_change(value), 8)
 
 
 class InstagramDashboardApiTests(TestCase):
@@ -1106,34 +1152,37 @@ class InstagramDashboardApiTests(TestCase):
             accounts_reached=999,
             impressions=888,
             accounts_engaged=777,
-            follower_count=555,
+            total_interactions=555,
+            follower_count=515,
         )
         InstagramAccountInsightDaily.objects.create(
             id_meta_instagram=self.account,
             created_at=date(2026, 2, 1),
+            accounts_reached=80,
             impressions=100,
             accounts_engaged=25,
+            total_interactions=60,
             follower_count=500,
+            follows_and_unfollows=0,
         )
         InstagramAccountInsightDaily.objects.create(
             id_meta_instagram=self.account,
             created_at=date(2026, 2, 2),
+            accounts_reached=90,
             impressions=120,
             accounts_engaged=30,
+            total_interactions=70,
             follower_count=510,
+            follows_and_unfollows=10,
         )
-        MediaInstagram.objects.create(
-            id_meta_media='media_1',
+        InstagramAccountInsightDaily.objects.create(
             id_meta_instagram=self.account,
-            media_type='IMAGE',
-            permalink='https://example.com/media_1',
-            timestamp=datetime(2026, 2, 2, tzinfo=timezone.utc),
-            likes=40,
-            comments=7,
-            saved=9,
-            shares=3,
-            reach=80,
-            views=90,
+            created_at=date(2026, 2, 3),
+            accounts_reached=95,
+            impressions=140,
+            accounts_engaged=35,
+            total_interactions=80,
+            follows_and_unfollows=5,
         )
 
     def test_instagram_timeseries_returns_daily_points(self):
@@ -1146,13 +1195,13 @@ class InstagramDashboardApiTests(TestCase):
         self.assertEqual(
             response.json()['timeseries'],
             [
-                {'date': '2026-02-01', 'impressions': 100, 'interactions': 25, 'followers': 500},
-                {'date': '2026-02-02', 'impressions': 120, 'interactions': 30, 'followers': 510},
-                {'date': '2026-02-03', 'impressions': 0, 'interactions': 0, 'followers': None},
+                {'date': '2026-02-01', 'impressions': 100, 'reach': 80, 'follower_count': 500},
+                {'date': '2026-02-02', 'impressions': 120, 'reach': 90, 'follower_count': 510},
+                {'date': '2026-02-03', 'impressions': 140, 'reach': 95, 'follower_count': 515},
             ],
         )
 
-    def test_instagram_kpis_uses_daily_insights_and_latest_followers(self):
+    def test_instagram_kpis_uses_requested_total_metrics(self):
         response = self.client.get(
             '/api/instagram/kpis',
             {'date_start': '2026-02-01', 'date_end': '2026-02-03', 'instagram_account_id': 'ig_1'},
@@ -1160,8 +1209,7 @@ class InstagramDashboardApiTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()['kpis']
-        self.assertEqual(payload['impressoes'], 220)
-        self.assertEqual(payload['interacoes'], 55)
-        self.assertEqual(payload['seguidores'], 510)
-        self.assertEqual(payload['curtidas'], 40)
-        self.assertEqual(payload['comentarios'], 7)
+        self.assertEqual(payload['alcance'], 265)
+        self.assertEqual(payload['impressoes'], 360)
+        self.assertEqual(payload['contas_engajadas'], 90)
+        self.assertEqual(payload['total_interacoes'], 210)
