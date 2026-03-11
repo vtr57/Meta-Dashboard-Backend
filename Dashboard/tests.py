@@ -1021,6 +1021,68 @@ class MetaSyncOrchestratorPathTests(TestCase):
             ],
         )
 
+    def test_parse_instagram_account_daily_insights_supports_total_value_and_date_range(self):
+        orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
+        payload = {
+            'data': [
+                {
+                    'name': 'views',
+                    'values': [
+                        {
+                            'value': {'total_value': {'value': 300}},
+                            'date_range': {'since': '2026-02-01', 'until': '2026-02-01'},
+                        },
+                        {
+                            'value': {'total_value': {'value': 420}},
+                            'date_range': {'since': '2026-02-02', 'until': '2026-02-02'},
+                        },
+                    ],
+                },
+                {
+                    'name': 'accounts_engaged',
+                    'values': [
+                        {
+                            'value': {'total_value': {'value': 33}},
+                            'date_range': {'since': '2026-02-01', 'until': '2026-02-01'},
+                        },
+                        {
+                            'value': {'total_value': {'value': 41}},
+                            'date_range': {'since': '2026-02-02', 'until': '2026-02-02'},
+                        },
+                    ],
+                },
+            ]
+        }
+
+        points = orchestrator._parse_instagram_account_daily_insights(payload)
+        updates = orchestrator._parse_instagram_account_insights(payload)
+
+        self.assertEqual(
+            points,
+            [
+                {
+                    'created_at': date(2026, 2, 1),
+                    'accounts_reached': 0,
+                    'impressions': 300,
+                    'profile_views': 0,
+                    'accounts_engaged': 33,
+                    'follower_count': None,
+                    'follows_and_unfollows': 0,
+                },
+                {
+                    'created_at': date(2026, 2, 2),
+                    'accounts_reached': 0,
+                    'impressions': 420,
+                    'profile_views': 0,
+                    'accounts_engaged': 41,
+                    'follower_count': None,
+                    'follows_and_unfollows': 0,
+                },
+            ],
+        )
+        self.assertEqual(updates['impressions'], 720)
+        self.assertEqual(updates['accounts_engaged'], 74)
+
 
 class InstagramDashboardApiTests(TestCase):
     def setUp(self):

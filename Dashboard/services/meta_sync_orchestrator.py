@@ -1295,7 +1295,10 @@ class MetaSyncOrchestrator:
                     continue
                 parsed_values.append(parsed_value)
                 point_date = self._parse_instagram_metric_date(
-                    raw_point.get('end_time') or raw_point.get('date') or raw_point.get('timestamp')
+                    raw_point.get('date_range')
+                    or raw_point.get('end_time')
+                    or raw_point.get('date')
+                    or raw_point.get('timestamp')
                 )
                 if point_date is not None:
                     daily_map[point_date][metric_name] = parsed_value
@@ -1310,6 +1313,14 @@ class MetaSyncOrchestrator:
         return metric_map, daily_map
 
     def _parse_instagram_metric_date(self, raw_value) -> Optional[date]:
+        if isinstance(raw_value, dict):
+            for key in ('since', 'start_time', 'start_date', 'until', 'end_time', 'end_date'):
+                nested_value = raw_value.get(key)
+                parsed_nested = self._parse_instagram_metric_date(nested_value)
+                if parsed_nested is not None:
+                    return parsed_nested
+            return None
+
         text = str(raw_value or '').strip()
         if not text:
             return None
@@ -1325,10 +1336,16 @@ class MetaSyncOrchestrator:
         if isinstance(value, (int, float, Decimal)):
             return int(value)
         if isinstance(value, dict):
-            if 'value' in value:
-                return self._to_int(value.get('value'))
             if 'total_value' in value:
-                return self._to_int(value.get('total_value'))
+                nested_total_value = value.get('total_value')
+                parsed_total_value = self._extract_metric_value(nested_total_value)
+                if parsed_total_value is not None:
+                    return parsed_total_value
+            if 'value' in value:
+                nested_value = value.get('value')
+                parsed_value = self._extract_metric_value(nested_value)
+                if parsed_value is not None:
+                    return parsed_value
             if 'count' in value:
                 return self._to_int(value.get('count'))
             return None
