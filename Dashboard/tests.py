@@ -1266,3 +1266,4 @@ class InstagramDashboardApiTests(TestCase):
         self.assertEqual(payload['impressoes'], 360)
         self.assertEqual(payload['contas_engajadas'], 90)
         self.assertEqual(payload['total_interacoes'], 210)
+        self.assertEqual(payload['seguidores_atuais'], 515)

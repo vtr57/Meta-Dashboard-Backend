@@ -1024,6 +1024,7 @@ def instagram_kpis(request):
     total_interacoes = _to_int(daily_totals['total_interactions_total']) or _to_int(
         snapshot_totals['total_interactions_total']
     )
+    seguidores_atuais = _latest_instagram_followers_total(accounts_qs, date_start, date_end)
 
     return Response(
         {
@@ -1035,6 +1036,7 @@ def instagram_kpis(request):
                 'impressoes': impressoes,
                 'contas_engajadas': contas_engajadas,
                 'total_interacoes': total_interacoes,
+                'seguidores_atuais': seguidores_atuais,
             },
         },
         status=status.HTTP_200_OK,
