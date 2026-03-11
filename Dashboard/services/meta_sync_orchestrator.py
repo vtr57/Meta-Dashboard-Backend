@@ -23,6 +23,7 @@ from Dashboard.models import (
     DashboardUser,
     FacebookPage,
     InstagramAccount,
+    InstagramAccountInsightDaily,
     MediaInstagram,
     SyncLog,
     SyncRun,
@@ -527,6 +528,7 @@ class MetaSyncOrchestrator:
 
         upserted = 0
         with_insights = 0
+        daily_insights_upserted = 0
 
         for page in pages:
             snapshot = page_map.get(page.id_meta_page) or {}
@@ -559,10 +561,20 @@ class MetaSyncOrchestrator:
             if parsed:
                 InstagramAccount.objects.filter(id=instagram_account.id).update(**parsed)
                 with_insights += 1
+            daily_points = self._parse_instagram_account_daily_insights(insights_payload)
+            for point in daily_points:
+                created_at = point.pop('created_at')
+                InstagramAccountInsightDaily.objects.update_or_create(
+                    id_meta_instagram=instagram_account,
+                    created_at=created_at,
+                    defaults=point,
+                )
+                daily_insights_upserted += 1
 
         return {
             'instagram_accounts_upserted': upserted,
             'instagram_accounts_with_insights': with_insights,
+            'instagram_account_daily_insights_upserted': daily_insights_upserted,
         }
 
     def sync_media_and_insights(self, since: date, until: date) -> Dict:
@@ -1218,21 +1230,7 @@ class MetaSyncOrchestrator:
         return common + ['views']
 
     def _parse_instagram_account_insights(self, payload: Dict) -> Dict:
-        if not isinstance(payload, dict):
-            return {}
-
-        metric_map = {}
-        for entry in payload.get('data') or []:
-            metric_name = entry.get('name')
-            values = entry.get('values') or []
-            parsed_values = [self._extract_metric_value(v.get('value')) for v in values if isinstance(v, dict)]
-            parsed_values = [v for v in parsed_values if v is not None]
-            if not metric_name or not parsed_values:
-                continue
-            if metric_name == 'follower_count':
-                metric_map[metric_name] = parsed_values[-1]
-            else:
-                metric_map[metric_name] = sum(parsed_values)
+        metric_map, _daily_map = self._collect_instagram_account_insight_maps(payload)
 
         updates = {}
         reach_value = metric_map.get('reach', metric_map.get('accounts_reached'))
@@ -1251,6 +1249,77 @@ class MetaSyncOrchestrator:
         if 'follows_and_unfollows' in metric_map:
             updates['follows_and_unfollows'] = self._to_int(metric_map['follows_and_unfollows'])
         return updates
+
+    def _parse_instagram_account_daily_insights(self, payload: Dict) -> List[Dict]:
+        _metric_map, daily_map = self._collect_instagram_account_insight_maps(payload)
+        points = []
+        for point_date in sorted(daily_map.keys()):
+            metrics = daily_map[point_date]
+            point = {
+                'created_at': point_date,
+                'accounts_reached': self._to_int(metrics.get('reach', metrics.get('accounts_reached'))),
+                'impressions': self._to_int(
+                    metrics.get('views', metrics.get('content_views', metrics.get('impressions')))
+                ),
+                'profile_views': self._to_int(metrics.get('profile_views')),
+                'accounts_engaged': self._to_int(metrics.get('accounts_engaged')),
+                'follower_count': (
+                    None if metrics.get('follower_count') is None else self._to_int(metrics.get('follower_count'))
+                ),
+                'follows_and_unfollows': self._to_int(metrics.get('follows_and_unfollows')),
+            }
+            points.append(point)
+        return points
+
+    def _collect_instagram_account_insight_maps(self, payload: Dict) -> Tuple[Dict, Dict[date, Dict]]:
+        if not isinstance(payload, dict):
+            return {}, {}
+
+        metric_map = {}
+        daily_map: Dict[date, Dict] = defaultdict(dict)
+
+        for entry in payload.get('data') or []:
+            if not isinstance(entry, dict):
+                continue
+            metric_name = str(entry.get('name') or '').strip()
+            values = entry.get('values') or []
+            if not metric_name or not isinstance(values, list):
+                continue
+
+            parsed_values = []
+            for raw_point in values:
+                if not isinstance(raw_point, dict):
+                    continue
+                parsed_value = self._extract_metric_value(raw_point.get('value'))
+                if parsed_value is None:
+                    continue
+                parsed_values.append(parsed_value)
+                point_date = self._parse_instagram_metric_date(
+                    raw_point.get('end_time') or raw_point.get('date') or raw_point.get('timestamp')
+                )
+                if point_date is not None:
+                    daily_map[point_date][metric_name] = parsed_value
+
+            if not parsed_values:
+                continue
+            if metric_name == 'follower_count':
+                metric_map[metric_name] = parsed_values[-1]
+            else:
+                metric_map[metric_name] = sum(parsed_values)
+
+        return metric_map, daily_map
+
+    def _parse_instagram_metric_date(self, raw_value) -> Optional[date]:
+        text = str(raw_value or '').strip()
+        if not text:
+            return None
+        candidate = parse_date(text[:10])
+        if candidate is not None:
+            return candidate
+        parsed_datetime = parse_datetime(text)
+        if parsed_datetime is not None:
+            return parsed_datetime.date()
+        return None
 
     def _extract_metric_value(self, value):
         if isinstance(value, (int, float, Decimal)):

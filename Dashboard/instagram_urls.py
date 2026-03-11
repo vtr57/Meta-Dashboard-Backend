@@ -7,6 +7,8 @@ urlpatterns = [
     path('accounts/', api_views.instagram_accounts, name='instagram-accounts-slash'),
     path('kpis', api_views.instagram_kpis, name='instagram-kpis'),
     path('kpis/', api_views.instagram_kpis, name='instagram-kpis-slash'),
+    path('timeseries', api_views.instagram_timeseries, name='instagram-timeseries'),
+    path('timeseries/', api_views.instagram_timeseries, name='instagram-timeseries-slash'),
     path('media-table', api_views.instagram_media_table, name='instagram-media-table'),
     path('media-table/', api_views.instagram_media_table, name='instagram-media-table-slash'),
 ]

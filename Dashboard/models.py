@@ -230,6 +230,35 @@ class InstagramAccount(models.Model):
         return f'{self.name} ({self.id_meta_instagram})'
 
 
+class InstagramAccountInsightDaily(models.Model):
+    id_meta_instagram = models.ForeignKey(
+        InstagramAccount,
+        on_delete=models.CASCADE,
+        related_name='daily_insights',
+    )
+    accounts_reached = models.PositiveBigIntegerField(default=0)
+    impressions = models.PositiveBigIntegerField(default=0)
+    profile_views = models.PositiveBigIntegerField(default=0)
+    accounts_engaged = models.PositiveBigIntegerField(default=0)
+    follower_count = models.PositiveBigIntegerField(null=True, blank=True)
+    follows_and_unfollows = models.IntegerField(default=0)
+    created_at = models.DateField(db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['id_meta_instagram', 'created_at'],
+                name='uniq_instagram_account_insight_daily',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['id_meta_instagram', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.id_meta_instagram.id_meta_instagram} @ {self.created_at.isoformat()}'
+
+
 class MediaInstagram(models.Model):
     id_meta_media = models.CharField(max_length=64, unique=True, db_index=True)
     id_meta_instagram = models.ForeignKey(

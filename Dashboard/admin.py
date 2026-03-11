@@ -10,6 +10,7 @@ from .models import (
     DashboardUser,
     FacebookPage,
     InstagramAccount,
+    InstagramAccountInsightDaily,
     MediaInstagram,
     Anotacoes
 )
@@ -17,6 +18,7 @@ from .models import (
 admin.site.register(DashboardUser)
 admin.site.register(MediaInstagram)
 admin.site.register(InstagramAccount)
+admin.site.register(InstagramAccountInsightDaily)
 admin.site.register(Anotacoes)
 admin.site.register(FacebookPage)
 admin.site.register(AdInsightDaily)

@@ -26,6 +26,7 @@ from Dashboard.models import (
     CampaignInsightDaily,
     DashboardUser,
     InstagramAccount,
+    InstagramAccountInsightDaily,
     MediaInstagram,
     SyncLog,
     SyncRun,
@@ -762,6 +763,43 @@ def _instagram_accounts_queryset(dashboard_user: DashboardUser):
     return InstagramAccount.objects.filter(id_page__dashboard_user_id=dashboard_user)
 
 
+def _instagram_daily_insights_queryset(accounts_qs, date_start, date_end):
+    return InstagramAccountInsightDaily.objects.filter(
+        id_meta_instagram__in=accounts_qs,
+        created_at__gte=date_start,
+        created_at__lte=date_end,
+    )
+
+
+def _iter_dates(date_start, date_end):
+    current = date_start
+    while current <= date_end:
+        yield current
+        current += timedelta(days=1)
+
+
+def _latest_instagram_followers_total(accounts_qs, date_start, date_end) -> int:
+    latest_by_account = {}
+    rows = (
+        _instagram_daily_insights_queryset(accounts_qs, date_start, date_end)
+        .order_by('id_meta_instagram_id', '-created_at', '-id')
+        .values('id_meta_instagram_id', 'follower_count')
+    )
+    for row in rows:
+        account_pk = row['id_meta_instagram_id']
+        if account_pk in latest_by_account:
+            continue
+        if row['follower_count'] is None:
+            continue
+        latest_by_account[account_pk] = _to_int(row['follower_count'])
+
+    if latest_by_account:
+        return sum(latest_by_account.values())
+
+    snapshot_totals = accounts_qs.aggregate(follower_count_total=Sum('follower_count'))
+    return _to_int(snapshot_totals['follower_count_total'])
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def instagram_accounts(request):
@@ -807,6 +845,7 @@ def instagram_kpis(request):
     if instagram_account_id:
         accounts_qs = accounts_qs.filter(id_meta_instagram=instagram_account_id)
 
+    daily_qs = _instagram_daily_insights_queryset(accounts_qs, date_start, date_end)
     media_qs = MediaInstagram.objects.filter(id_meta_instagram__in=accounts_qs)
     media_qs = media_qs.filter(timestamp__date__gte=date_start, timestamp__date__lte=date_end)
 
@@ -819,7 +858,14 @@ def instagram_kpis(request):
         shares_total=Sum('shares'),
         plays_total=Sum('plays'),
     )
-    account_totals = accounts_qs.aggregate(
+    daily_totals = daily_qs.aggregate(
+        accounts_reached_total=Sum('accounts_reached'),
+        impressions_total=Sum('impressions'),
+        profile_views_total=Sum('profile_views'),
+        accounts_engaged_total=Sum('accounts_engaged'),
+        follows_and_unfollows_total=Sum('follows_and_unfollows'),
+    )
+    snapshot_totals = accounts_qs.aggregate(
         accounts_reached_total=Sum('accounts_reached'),
         impressions_total=Sum('impressions'),
         profile_views_total=Sum('profile_views'),
@@ -830,11 +876,19 @@ def instagram_kpis(request):
 
     media_reach = _to_int(media_totals['reach_total'])
     media_views = _to_int(media_totals['views_total'])
-    account_reach = _to_int(account_totals['accounts_reached_total'])
-    account_impressions = _to_int(account_totals['impressions_total'])
+    daily_reach = _to_int(daily_totals['accounts_reached_total'])
+    daily_impressions = _to_int(daily_totals['impressions_total'])
+    snapshot_reach = _to_int(snapshot_totals['accounts_reached_total'])
+    snapshot_impressions = _to_int(snapshot_totals['impressions_total'])
+    interactions = _to_int(daily_totals['accounts_engaged_total']) or _to_int(snapshot_totals['accounts_engaged_total'])
+    followers = _latest_instagram_followers_total(accounts_qs, date_start, date_end)
 
-    alcance = media_reach if media_reach > 0 else account_reach
-    impressoes = media_views if media_views > 0 else account_impressions
+    alcance = daily_reach if daily_reach > 0 else snapshot_reach if snapshot_reach > 0 else media_reach
+    impressoes = (
+        daily_impressions
+        if daily_impressions > 0
+        else snapshot_impressions if snapshot_impressions > 0 else media_views
+    )
 
     return Response(
         {
@@ -849,11 +903,69 @@ def instagram_kpis(request):
                 'salvos': _to_int(media_totals['saved_total']),
                 'compartilhamentos': _to_int(media_totals['shares_total']),
                 'plays': _to_int(media_totals['plays_total']),
-                'profile_views': _to_int(account_totals['profile_views_total']),
-                'accounts_engaged': _to_int(account_totals['accounts_engaged_total']),
-                'follower_count': _to_int(account_totals['follower_count_total']),
-                'follows_and_unfollows': _to_int(account_totals['follows_and_unfollows_total']),
+                'interacoes': interactions,
+                'seguidores': followers,
+                'profile_views': _to_int(daily_totals['profile_views_total']) or _to_int(snapshot_totals['profile_views_total']),
+                'accounts_engaged': interactions,
+                'follower_count': followers,
+                'follows_and_unfollows': (
+                    _to_int(daily_totals['follows_and_unfollows_total'])
+                    or _to_int(snapshot_totals['follows_and_unfollows_total'])
+                ),
             },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def instagram_timeseries(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    date_start, date_end, date_error = _parse_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    instagram_account_id = str(request.query_params.get('instagram_account_id') or '').strip()
+    accounts_qs = _instagram_accounts_queryset(dashboard_user)
+    if instagram_account_id:
+        accounts_qs = accounts_qs.filter(id_meta_instagram=instagram_account_id)
+
+    rows = (
+        _instagram_daily_insights_queryset(accounts_qs, date_start, date_end)
+        .values('created_at')
+        .annotate(
+            impressions_total=Sum('impressions'),
+            interactions_total=Sum('accounts_engaged'),
+            followers_total=Sum('follower_count'),
+        )
+        .order_by('created_at')
+    )
+    by_date = {row['created_at']: row for row in rows}
+
+    timeseries = [
+        {
+            'date': current_date,
+            'impressions': _to_int((by_date.get(current_date) or {}).get('impressions_total')),
+            'interactions': _to_int((by_date.get(current_date) or {}).get('interactions_total')),
+            'followers': (
+                None
+                if (by_date.get(current_date) or {}).get('followers_total') is None
+                else _to_int((by_date.get(current_date) or {}).get('followers_total'))
+            ),
+        }
+        for current_date in _iter_dates(date_start, date_end)
+    ]
+
+    return Response(
+        {
+            'instagram_account_id': instagram_account_id or None,
+            'date_start': date_start,
+            'date_end': date_end,
+            'timeseries': timeseries,
         },
         status=status.HTTP_200_OK,
     )

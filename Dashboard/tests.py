@@ -1,5 +1,5 @@
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 import requests
@@ -17,6 +17,10 @@ from Dashboard.models import (
     Campaign,
     CampaignInsightDaily,
     DashboardUser,
+    FacebookPage,
+    InstagramAccount,
+    InstagramAccountInsightDaily,
+    MediaInstagram,
     SyncLog,
     SyncRun,
 )
@@ -962,3 +966,140 @@ class MetaSyncOrchestratorPathTests(TestCase):
         self.assertEqual(updates['views'], 91)
         self.assertEqual(updates['watch_time'], 456)
         self.assertAlmostEqual(float(updates['avg_watch_time']), 12.7, places=4)
+
+    def test_parse_instagram_account_daily_insights_maps_per_day(self):
+        orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
+        payload = {
+            'data': [
+                {
+                    'name': 'views',
+                    'values': [
+                        {'value': '120', 'end_time': '2026-02-01T07:00:00+0000'},
+                        {'value': '140', 'end_time': '2026-02-02T07:00:00+0000'},
+                    ],
+                },
+                {
+                    'name': 'accounts_engaged',
+                    'values': [
+                        {'value': '20', 'end_time': '2026-02-01T07:00:00+0000'},
+                        {'value': '26', 'end_time': '2026-02-02T07:00:00+0000'},
+                    ],
+                },
+                {
+                    'name': 'follower_count',
+                    'values': [
+                        {'value': '700', 'end_time': '2026-02-01T07:00:00+0000'},
+                        {'value': '710', 'end_time': '2026-02-02T07:00:00+0000'},
+                    ],
+                },
+            ]
+        }
+
+        points = orchestrator._parse_instagram_account_daily_insights(payload)
+
+        self.assertEqual(
+            points,
+            [
+                {
+                    'created_at': date(2026, 2, 1),
+                    'accounts_reached': 0,
+                    'impressions': 120,
+                    'profile_views': 0,
+                    'accounts_engaged': 20,
+                    'follower_count': 700,
+                    'follows_and_unfollows': 0,
+                },
+                {
+                    'created_at': date(2026, 2, 2),
+                    'accounts_reached': 0,
+                    'impressions': 140,
+                    'profile_views': 0,
+                    'accounts_engaged': 26,
+                    'follower_count': 710,
+                    'follows_and_unfollows': 0,
+                },
+            ],
+        )
+
+
+class InstagramDashboardApiTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='ig-user', password='Secret123!')
+        self.client = Client()
+        self.client.force_login(self.user)
+        self.dashboard_user = DashboardUser.objects.create(
+            user=self.user,
+            id_meta_user='meta-ig-user',
+            long_access_token='token',
+        )
+        self.page = FacebookPage.objects.create(
+            id_meta_page='page_1',
+            name='Pagina 1',
+            dashboard_user_id=self.dashboard_user,
+        )
+        self.account = InstagramAccount.objects.create(
+            id_meta_instagram='ig_1',
+            id_page=self.page,
+            name='perfil_1',
+            accounts_reached=999,
+            impressions=888,
+            accounts_engaged=777,
+            follower_count=555,
+        )
+        InstagramAccountInsightDaily.objects.create(
+            id_meta_instagram=self.account,
+            created_at=date(2026, 2, 1),
+            impressions=100,
+            accounts_engaged=25,
+            follower_count=500,
+        )
+        InstagramAccountInsightDaily.objects.create(
+            id_meta_instagram=self.account,
+            created_at=date(2026, 2, 2),
+            impressions=120,
+            accounts_engaged=30,
+            follower_count=510,
+        )
+        MediaInstagram.objects.create(
+            id_meta_media='media_1',
+            id_meta_instagram=self.account,
+            media_type='IMAGE',
+            permalink='https://example.com/media_1',
+            timestamp=datetime(2026, 2, 2, tzinfo=timezone.utc),
+            likes=40,
+            comments=7,
+            saved=9,
+            shares=3,
+            reach=80,
+            views=90,
+        )
+
+    def test_instagram_timeseries_returns_daily_points(self):
+        response = self.client.get(
+            '/api/instagram/timeseries',
+            {'date_start': '2026-02-01', 'date_end': '2026-02-03', 'instagram_account_id': 'ig_1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()['timeseries'],
+            [
+                {'date': '2026-02-01', 'impressions': 100, 'interactions': 25, 'followers': 500},
+                {'date': '2026-02-02', 'impressions': 120, 'interactions': 30, 'followers': 510},
+                {'date': '2026-02-03', 'impressions': 0, 'interactions': 0, 'followers': None},
+            ],
+        )
+
+    def test_instagram_kpis_uses_daily_insights_and_latest_followers(self):
+        response = self.client.get(
+            '/api/instagram/kpis',
+            {'date_start': '2026-02-01', 'date_end': '2026-02-03', 'instagram_account_id': 'ig_1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['kpis']
+        self.assertEqual(payload['impressoes'], 220)
+        self.assertEqual(payload['interacoes'], 55)
+        self.assertEqual(payload['seguidores'], 510)
+        self.assertEqual(payload['curtidas'], 40)
+        self.assertEqual(payload['comentarios'], 7)
