@@ -950,6 +950,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
     def test_fetch_instagram_account_insights_skips_when_window_is_outside_limit(self, _mocked_today):
         orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
         orchestrator.client = Mock()
+        orchestrator.client.request_with_retry.return_value = {'data': []}
 
         payload = orchestrator._fetch_instagram_account_insights(
             ig_id='17841455724736396',
@@ -958,7 +959,11 @@ class MetaSyncOrchestratorPathTests(TestCase):
         )
 
         self.assertEqual(payload, {'data': []})
-        orchestrator.client.request_with_retry.assert_not_called()
+        all_params = [call.kwargs['params'] for call in orchestrator.client.request_with_retry.call_args_list]
+        follower_params = [params for params in all_params if params.get('metric') == 'follower_count']
+        self.assertEqual(len(follower_params), 1)
+        self.assertEqual(follower_params[0]['since'], '2026-01-22')
+        self.assertEqual(follower_params[0]['until'], '2026-02-18')
 
     def test_extract_results_value_reads_nested_values_list(self):
         orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)

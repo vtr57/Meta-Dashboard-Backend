@@ -1065,22 +1065,23 @@ class MetaSyncOrchestrator:
             )
             effective_since = min_allowed_since
 
-        if effective_since > effective_until:
-            self._log(
-                'instagram_account_insights',
-                (
-                    f'Janela ignorada para conta {ig_id}: since={effective_since.isoformat()} '
-                    f'e maior que until={effective_until.isoformat()} apos ajuste de 2 anos.'
-                ),
-            )
-            return {'data': []}
-
         metrics_regular = ['reach', 'impressions']
         metrics_total_value = ['views', 'content_views', 'profile_views', 'accounts_engaged', 'total_interactions']
         metrics_with_breakdown = ['follows_and_unfollows']
         metrics = metrics_regular + metrics_total_value + metrics_with_breakdown + ['follower_count']
         metric_entries: Dict[str, Dict] = {}
-        date_windows = list(self._iter_day_chunks(effective_since, effective_until, max_span_days=29))
+        if effective_since > effective_until:
+            self._log(
+                'instagram_account_insights',
+                (
+                    f'Janela regular ignorada para conta {ig_id}: since={effective_since.isoformat()} '
+                    f'e maior que until={effective_until.isoformat()} apos ajuste de 2 anos. '
+                    'Extraindo follower_count atual em fallback.'
+                ),
+            )
+            date_windows = []
+        else:
+            date_windows = list(self._iter_day_chunks(effective_since, effective_until, max_span_days=29))
 
         def merge_metric_entries(payload: Dict) -> None:
             if not isinstance(payload, dict):
@@ -1198,9 +1199,8 @@ class MetaSyncOrchestrator:
 
         # follower_count is stricter than other metrics. Keep an extra 1-day safety margin
         # to avoid timezone boundary issues on Meta's side.
-        follower_today_guard = timezone.localdate() - timedelta(days=2)
-        follower_until = min(effective_until, follower_today_guard)
-        follower_since = max(effective_since, follower_until - timedelta(days=27))
+        follower_until = timezone.localdate() - timedelta(days=2)
+        follower_since = follower_until - timedelta(days=27)
         if follower_since <= follower_until:
             try:
                 payload = self.client.request_with_retry(
@@ -1223,7 +1223,7 @@ class MetaSyncOrchestrator:
                 )
                 if supports_last_30_days_error:
                     retry_until = timezone.localdate() - timedelta(days=2)
-                    retry_since = max(effective_since, retry_until - timedelta(days=7))
+                    retry_since = retry_until - timedelta(days=7)
                     if retry_since <= retry_until:
                         try:
                             payload = self.client.request_with_retry(
