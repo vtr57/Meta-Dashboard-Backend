@@ -1332,10 +1332,10 @@ class InstagramDashboardApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()['kpis']
         self.assertEqual(payload['alcance'], 265)
-        self.assertEqual(payload['impressoes'], 360)
-        self.assertEqual(payload['contas_engajadas'], 90)
-        self.assertEqual(payload['total_interacoes'], 210)
         self.assertEqual(payload['seguidores_atuais'], 515)
+        self.assertNotIn('impressoes', payload)
+        self.assertNotIn('contas_engajadas', payload)
+        self.assertNotIn('total_interacoes', payload)
 
     def test_instagram_kpis_uses_current_followers_total_not_period_end(self):
         self.account.follower_count = 620

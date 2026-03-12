@@ -1000,31 +1000,12 @@ def instagram_kpis(request):
         accounts_qs = accounts_qs.filter(id_meta_instagram=instagram_account_id)
 
     daily_qs = _instagram_daily_insights_queryset(accounts_qs, date_start, date_end)
-    daily_totals = daily_qs.aggregate(
-        accounts_reached_total=Sum('accounts_reached'),
-        impressions_total=Sum('impressions'),
-        accounts_engaged_total=Sum('accounts_engaged'),
-        total_interactions_total=Sum('total_interactions'),
-    )
-    snapshot_totals = accounts_qs.aggregate(
-        accounts_reached_total=Sum('accounts_reached'),
-        impressions_total=Sum('impressions'),
-        accounts_engaged_total=Sum('accounts_engaged'),
-        total_interactions_total=Sum('total_interactions'),
-    )
+    daily_totals = daily_qs.aggregate(accounts_reached_total=Sum('accounts_reached'))
+    snapshot_totals = accounts_qs.aggregate(accounts_reached_total=Sum('accounts_reached'))
 
     daily_reach = _to_int(daily_totals['accounts_reached_total'])
-    daily_impressions = _to_int(daily_totals['impressions_total'])
     snapshot_reach = _to_int(snapshot_totals['accounts_reached_total'])
-    snapshot_impressions = _to_int(snapshot_totals['impressions_total'])
     alcance = daily_reach if daily_reach > 0 else snapshot_reach
-    impressoes = daily_impressions if daily_impressions > 0 else snapshot_impressions
-    contas_engajadas = _to_int(daily_totals['accounts_engaged_total']) or _to_int(
-        snapshot_totals['accounts_engaged_total']
-    )
-    total_interacoes = _to_int(daily_totals['total_interactions_total']) or _to_int(
-        snapshot_totals['total_interactions_total']
-    )
     seguidores_atuais = _current_instagram_followers_total(accounts_qs)
 
     return Response(
@@ -1034,9 +1015,6 @@ def instagram_kpis(request):
             'date_end': date_end,
             'kpis': {
                 'alcance': alcance,
-                'impressoes': impressoes,
-                'contas_engajadas': contas_engajadas,
-                'total_interacoes': total_interacoes,
                 'seguidores_atuais': seguidores_atuais,
             },
         },
