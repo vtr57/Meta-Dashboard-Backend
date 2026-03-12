@@ -1354,6 +1354,8 @@ class MetaSyncOrchestrator:
                 continue
 
             parsed_values = []
+            latest_point_date = None
+            latest_point_value = None
             for raw_point in values:
                 if not isinstance(raw_point, dict):
                     continue
@@ -1372,11 +1374,14 @@ class MetaSyncOrchestrator:
                 )
                 if point_date is not None:
                     daily_map[point_date][metric_name] = parsed_value
+                    if latest_point_date is None or point_date >= latest_point_date:
+                        latest_point_date = point_date
+                        latest_point_value = parsed_value
 
             if not parsed_values:
                 continue
             if metric_name == 'follower_count':
-                metric_map[metric_name] = parsed_values[-1]
+                metric_map[metric_name] = latest_point_value if latest_point_value is not None else parsed_values[-1]
             else:
                 metric_map[metric_name] = sum(parsed_values)
 

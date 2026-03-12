@@ -854,25 +854,30 @@ def _iter_dates(date_start, date_end):
 
 
 def _current_instagram_followers_total(accounts_qs) -> int:
-    latest_by_account = {}
-    rows = (
-        InstagramAccountInsightDaily.objects.filter(id_meta_instagram__in=accounts_qs)
-        .order_by('id_meta_instagram_id', '-created_at', '-id')
-        .values('id_meta_instagram_id', 'follower_count')
-    )
-    for row in rows:
-        account_pk = row['id_meta_instagram_id']
-        if account_pk in latest_by_account:
-            continue
-        if row['follower_count'] is None:
-            continue
-        latest_by_account[account_pk] = _to_int(row['follower_count'])
-
+    # Source of truth: follower_count extracted from Meta and persisted on InstagramAccount.
+    followers_by_account = {}
     for account in accounts_qs.only('id', 'follower_count'):
-        if account.follower_count is not None:
-            latest_by_account[account.id] = _to_int(account.follower_count)
-    total_followers = sum(latest_by_account.values())
-    return total_followers
+        if account.follower_count is None:
+            continue
+        followers_by_account[account.id] = _to_int(account.follower_count)
+
+    # Fallback for accounts that still don't have snapshot follower_count populated.
+    accounts_without_snapshot = [pk for pk in accounts_qs.values_list('id', flat=True) if pk not in followers_by_account]
+    if accounts_without_snapshot:
+        rows = (
+            InstagramAccountInsightDaily.objects.filter(id_meta_instagram_id__in=accounts_without_snapshot)
+            .order_by('id_meta_instagram_id', '-created_at', '-id')
+            .values('id_meta_instagram_id', 'follower_count')
+        )
+        for row in rows:
+            account_pk = row['id_meta_instagram_id']
+            if account_pk in followers_by_account:
+                continue
+            if row['follower_count'] is None:
+                continue
+            followers_by_account[account_pk] = _to_int(row['follower_count'])
+
+    return sum(followers_by_account.values())
 
 
 def _build_instagram_followers_timeseries(accounts_qs, date_start, date_end):

@@ -1044,6 +1044,24 @@ class MetaSyncOrchestratorPathTests(TestCase):
         self.assertEqual(updates['impressions'], 410)
         self.assertEqual(points[0]['impressions'], 410)
 
+    def test_parse_instagram_account_insights_uses_latest_follower_count_by_date(self):
+        orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
+        payload = {
+            'data': [
+                {
+                    'name': 'follower_count',
+                    'values': [
+                        {'value': '710', 'date_range': {'since': '2026-02-03', 'until': '2026-02-03'}},
+                        {'value': '700', 'date_range': {'since': '2026-02-01', 'until': '2026-02-01'}},
+                        {'value': '705', 'date_range': {'since': '2026-02-02', 'until': '2026-02-02'}},
+                    ],
+                },
+            ]
+        }
+
+        updates = orchestrator._parse_instagram_account_insights(payload)
+        self.assertEqual(updates['follower_count'], 710)
+
     def test_media_metrics_for_type_uses_supported_metrics(self):
         orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
         reel_metrics = orchestrator._media_metrics_for_type('REEL')
@@ -1336,3 +1354,26 @@ class InstagramDashboardApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()['kpis']
         self.assertEqual(payload['seguidores_atuais'], 620)
+
+    def test_instagram_kpis_falls_back_to_latest_daily_follower_count_when_snapshot_is_missing(self):
+        self.account.follower_count = None
+        self.account.save(update_fields=['follower_count'])
+        InstagramAccountInsightDaily.objects.create(
+            id_meta_instagram=self.account,
+            created_at=date(2026, 2, 12),
+            accounts_reached=0,
+            impressions=0,
+            accounts_engaged=0,
+            total_interactions=0,
+            follower_count=640,
+            follows_and_unfollows=0,
+        )
+
+        response = self.client.get(
+            '/api/instagram/kpis',
+            {'date_start': '2026-02-01', 'date_end': '2026-02-03', 'instagram_account_id': 'ig_1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['kpis']
+        self.assertEqual(payload['seguidores_atuais'], 640)
