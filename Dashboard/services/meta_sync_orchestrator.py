@@ -1053,14 +1053,13 @@ class MetaSyncOrchestrator:
         assert self.client
         effective_since = since
         effective_until = until
-        # Meta may reject boundary dates exactly at "2 years"; keep a 2-day safety margin.
-        min_allowed_since = self._subtract_months(timezone.localdate(), 24) + timedelta(days=2)
+        min_allowed_since = self._subtract_months(timezone.localdate(), 24)
 
         if effective_since < min_allowed_since:
             self._log(
                 'instagram_account_insights',
                 (
-                    f'Ajustando janela da conta {ig_id} para limite de 2 anos (margem +2d): '
+                    f'Ajustando janela da conta {ig_id} para limite de 2 anos: '
                     f'since {effective_since.isoformat()} -> {min_allowed_since.isoformat()}'
                 ),
             )
@@ -1076,7 +1075,7 @@ class MetaSyncOrchestrator:
             )
             return {'data': []}
 
-        metrics_regular = ['reach']
+        metrics_regular = ['reach', 'impressions']
         metrics_total_value = ['views', 'content_views', 'profile_views', 'accounts_engaged', 'total_interactions']
         metrics_with_breakdown = ['follows_and_unfollows']
         metrics = metrics_regular + metrics_total_value + metrics_with_breakdown + ['follower_count']
@@ -1302,7 +1301,7 @@ class MetaSyncOrchestrator:
         if reach_value is not None:
             updates['accounts_reached'] = self._to_int(reach_value)
 
-        impressions_value = metric_map.get('views', metric_map.get('content_views', metric_map.get('impressions')))
+        impressions_value = metric_map.get('impressions', metric_map.get('views', metric_map.get('content_views')))
         if impressions_value is not None:
             updates['impressions'] = self._to_int(impressions_value)
         if 'profile_views' in metric_map:
@@ -1326,7 +1325,7 @@ class MetaSyncOrchestrator:
                 'created_at': point_date,
                 'accounts_reached': self._to_int(metrics.get('reach', metrics.get('accounts_reached'))),
                 'impressions': self._to_int(
-                    metrics.get('views', metrics.get('content_views', metrics.get('impressions')))
+                    metrics.get('impressions', metrics.get('views', metrics.get('content_views')))
                 ),
                 'profile_views': self._to_int(metrics.get('profile_views')),
                 'accounts_engaged': self._to_int(metrics.get('accounts_engaged')),

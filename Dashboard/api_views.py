@@ -853,14 +853,10 @@ def _iter_dates(date_start, date_end):
         current += timedelta(days=1)
 
 
-def _latest_instagram_followers_total(accounts_qs, date_start, date_end) -> int:
-    followers_by_date = _build_instagram_followers_timeseries(accounts_qs, date_start, date_end)
-    if followers_by_date:
-        return _to_int(followers_by_date.get(date_end))
-
+def _current_instagram_followers_total(accounts_qs) -> int:
     latest_by_account = {}
     rows = (
-        _instagram_daily_insights_queryset(accounts_qs, date_start, date_end)
+        InstagramAccountInsightDaily.objects.filter(id_meta_instagram__in=accounts_qs)
         .order_by('id_meta_instagram_id', '-created_at', '-id')
         .values('id_meta_instagram_id', 'follower_count')
     )
@@ -872,11 +868,11 @@ def _latest_instagram_followers_total(accounts_qs, date_start, date_end) -> int:
             continue
         latest_by_account[account_pk] = _to_int(row['follower_count'])
 
-    if latest_by_account:
-        return sum(latest_by_account.values())
-
-    snapshot_totals = accounts_qs.aggregate(follower_count_total=Sum('follower_count'))
-    return _to_int(snapshot_totals['follower_count_total'])
+    for account in accounts_qs.only('id', 'follower_count'):
+        if account.follower_count is not None:
+            latest_by_account[account.id] = _to_int(account.follower_count)
+    total_followers = sum(latest_by_account.values())
+    return total_followers
 
 
 def _build_instagram_followers_timeseries(accounts_qs, date_start, date_end):
@@ -1024,7 +1020,7 @@ def instagram_kpis(request):
     total_interacoes = _to_int(daily_totals['total_interactions_total']) or _to_int(
         snapshot_totals['total_interactions_total']
     )
-    seguidores_atuais = _latest_instagram_followers_total(accounts_qs, date_start, date_end)
+    seguidores_atuais = _current_instagram_followers_total(accounts_qs)
 
     return Response(
         {

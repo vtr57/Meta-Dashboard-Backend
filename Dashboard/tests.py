@@ -883,7 +883,7 @@ class MetaSyncOrchestratorPathTests(TestCase):
         )
 
         first_call_params = orchestrator.client.request_with_retry.call_args_list[0].kwargs['params']
-        self.assertEqual(first_call_params['since'], '2024-02-22')
+        self.assertEqual(first_call_params['since'], '2024-02-20')
         self.assertTrue(orchestrator.client.request_with_retry.call_count > 1)
         for call in orchestrator.client.request_with_retry.call_args_list:
             params = call.kwargs['params']
@@ -907,6 +907,21 @@ class MetaSyncOrchestratorPathTests(TestCase):
 
         all_params = [call.kwargs['params'] for call in orchestrator.client.request_with_retry.call_args_list]
         self.assertTrue(any(params.get('metric_type') == 'total_value' for params in all_params))
+
+    @patch('Dashboard.services.meta_sync_orchestrator.timezone.localdate', return_value=date(2026, 2, 20))
+    def test_fetch_instagram_account_insights_requests_impressions_metric(self, _mocked_today):
+        orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
+        orchestrator.client = Mock()
+        orchestrator.client.request_with_retry.return_value = {'data': []}
+
+        orchestrator._fetch_instagram_account_insights(
+            ig_id='17841455724736396',
+            since=date(2024, 6, 1),
+            until=date(2026, 2, 20),
+        )
+
+        all_metrics = [str(call.kwargs['params'].get('metric') or '') for call in orchestrator.client.request_with_retry.call_args_list]
+        self.assertTrue(any('impressions' in metrics.split(',') for metrics in all_metrics))
 
     @patch('Dashboard.services.meta_sync_orchestrator.timezone.localdate', return_value=date(2026, 2, 20))
     def test_fetch_instagram_account_insights_limits_follower_count_to_last_30_days_excluding_today(
@@ -997,6 +1012,37 @@ class MetaSyncOrchestratorPathTests(TestCase):
         self.assertEqual(updates['total_interactions'], 44)
         self.assertEqual(updates['follower_count'], 777)
         self.assertEqual(updates['follows_and_unfollows'], 5)
+
+    def test_parse_instagram_account_insights_prefers_impressions_metric(self):
+        orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
+        payload = {
+            'data': [
+                {
+                    'name': 'impressions',
+                    'values': [
+                        {
+                            'value': '410',
+                            'date_range': {'since': '2026-02-01', 'until': '2026-02-01'},
+                        }
+                    ],
+                },
+                {
+                    'name': 'views',
+                    'values': [
+                        {
+                            'value': '340',
+                            'date_range': {'since': '2026-02-01', 'until': '2026-02-01'},
+                        }
+                    ],
+                },
+            ]
+        }
+
+        updates = orchestrator._parse_instagram_account_insights(payload)
+        points = orchestrator._parse_instagram_account_daily_insights(payload)
+
+        self.assertEqual(updates['impressions'], 410)
+        self.assertEqual(points[0]['impressions'], 410)
 
     def test_media_metrics_for_type_uses_supported_metrics(self):
         orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
@@ -1267,3 +1313,26 @@ class InstagramDashboardApiTests(TestCase):
         self.assertEqual(payload['contas_engajadas'], 90)
         self.assertEqual(payload['total_interacoes'], 210)
         self.assertEqual(payload['seguidores_atuais'], 515)
+
+    def test_instagram_kpis_uses_current_followers_total_not_period_end(self):
+        self.account.follower_count = 620
+        self.account.save(update_fields=['follower_count'])
+        InstagramAccountInsightDaily.objects.create(
+            id_meta_instagram=self.account,
+            created_at=date(2026, 2, 10),
+            accounts_reached=0,
+            impressions=0,
+            accounts_engaged=0,
+            total_interactions=0,
+            follower_count=620,
+            follows_and_unfollows=0,
+        )
+
+        response = self.client.get(
+            '/api/instagram/kpis',
+            {'date_start': '2026-02-01', 'date_end': '2026-02-03', 'instagram_account_id': 'ig_1'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()['kpis']
+        self.assertEqual(payload['seguidores_atuais'], 620)
