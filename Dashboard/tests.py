@@ -1067,6 +1067,17 @@ class MetaSyncOrchestratorPathTests(TestCase):
         updates = orchestrator._parse_instagram_account_insights(payload)
         self.assertEqual(updates['follower_count'], 710)
 
+    def test_fetch_instagram_current_followers_count_reads_graph_field(self):
+        orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
+        orchestrator.client = Mock()
+        orchestrator.client.request_with_retry.return_value = {'followers_count': 1234}
+
+        count = orchestrator._fetch_instagram_current_followers_count('17841455724736396')
+
+        self.assertEqual(count, 1234)
+        params = orchestrator.client.request_with_retry.call_args.kwargs['params']
+        self.assertEqual(params['fields'], 'followers_count')
+
     def test_media_metrics_for_type_uses_supported_metrics(self):
         orchestrator = MetaSyncOrchestrator(sync_run_id=1, dashboard_user_id=1)
         reel_metrics = orchestrator._media_metrics_for_type('REEL')

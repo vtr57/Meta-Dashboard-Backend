@@ -586,6 +586,11 @@ class MetaSyncOrchestrator:
 
             insights_payload = self._fetch_instagram_account_insights(ig_id, since, until)
             parsed = self._parse_instagram_account_insights(insights_payload)
+            current_followers = self._fetch_instagram_current_followers_count(ig_id)
+            if current_followers is not None:
+                parsed['follower_count'] = current_followers
+            else:
+                parsed.pop('follower_count', None)
             if parsed:
                 InstagramAccount.objects.filter(id=instagram_account.id).update(**parsed)
                 with_insights += 1
@@ -1280,6 +1285,32 @@ class MetaSyncOrchestrator:
             )
 
         return {'data': list(metric_entries.values())}
+
+    def _fetch_instagram_current_followers_count(self, ig_id: str) -> Optional[int]:
+        assert self.client
+        try:
+            payload = self.client.request_with_retry(
+                'GET',
+                f'{ig_id}',
+                params={'fields': 'followers_count'},
+                entity='instagram_accounts',
+            )
+        except MetaClientError as exc:
+            self._log(
+                'instagram_account_insights',
+                (
+                    f'Falha ao extrair followers_count atual da conta {ig_id}. '
+                    f'Motivo: {exc}'
+                ),
+            )
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+        followers_count = payload.get('followers_count')
+        if followers_count in (None, ''):
+            return None
+        return self._to_int(followers_count)
 
     def _media_metrics_for_type(self, media_type: str) -> List[str]:
         kind = (media_type or '').upper()
