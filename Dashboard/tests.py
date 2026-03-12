@@ -1393,3 +1393,5 @@ class InstagramDashboardApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()['kpis']
         self.assertEqual(payload['seguidores_atuais'], 640)
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.follower_count, 640)
