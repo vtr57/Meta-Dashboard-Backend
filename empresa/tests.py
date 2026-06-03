@@ -223,3 +223,67 @@ class ClientesSharedAdAccountsAccessTests(TestCase):
         payload = response.json()
         self.assertEqual(payload['cliente']['nome_id'], self.shared_ad_account.id)
         self.assertEqual(payload['cliente']['id_meta_ad_account'], self.shared_ad_account.id_meta_ad_account)
+
+
+class ClientesEstadoEndpointTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='estado-user', password='Secret123!')
+        self.dashboard_user = DashboardUser.objects.create(
+            user=self.user,
+            id_meta_user='meta-estado-user',
+            long_access_token='estado-long-token',
+        )
+        self.ad_account = AdAccount.objects.create(
+            id_meta_ad_account='act_estado_123',
+            name='Conta Estado',
+            id_dashboard_user=self.dashboard_user,
+        )
+        self.cliente = Cliente.objects.create(
+            name='Cliente Estado',
+            estado=Cliente.ESTADO_REGULAR,
+            descricao_estado='Acompanhamento inicial',
+            nicho_atuacao='Servico',
+            valor_investido=Decimal('150.00'),
+            forma_pagamento=Cliente.FORMA_PAGAMENTO_PIX,
+            periodo_cobranca=Cliente.PERIODO_COBRANCA_MENSAL,
+            saldo_atual=Decimal('120.00'),
+            gasto_diario=Decimal('12.00'),
+            nome=self.ad_account,
+            data_renovacao_creditos=date(2026, 4, 1),
+        )
+        self.client.force_login(self.user)
+
+    def test_get_clientes_serializes_estado_fields(self):
+        response = self.client.get('/api/empresa/clientes')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['total'], 1)
+        self.assertEqual(payload['clientes'][0]['estado'], Cliente.ESTADO_REGULAR)
+        self.assertEqual(payload['clientes'][0]['descricao_estado'], 'Acompanhamento inicial')
+
+    def test_patch_cliente_updates_estado_and_descricao(self):
+        response = self.client.patch(
+            f'/api/empresa/clientes/{self.cliente.id}',
+            data={'estado': Cliente.ESTADO_BOM, 'descricao_estado': 'Pagamento em dia'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['cliente']['estado'], Cliente.ESTADO_BOM)
+        self.assertEqual(payload['cliente']['descricao_estado'], 'Pagamento em dia')
+
+        self.cliente.refresh_from_db()
+        self.assertEqual(self.cliente.estado, Cliente.ESTADO_BOM)
+        self.assertEqual(self.cliente.descricao_estado, 'Pagamento em dia')
+
+    def test_patch_cliente_rejects_invalid_estado(self):
+        response = self.client.patch(
+            f'/api/empresa/clientes/{self.cliente.id}',
+            data={'estado': 'PESSIMO'},
+            content_type='application/json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Campo estado invalido', response.json()['detail'])

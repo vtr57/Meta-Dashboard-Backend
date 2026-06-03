@@ -6,6 +6,14 @@ from django.utils import timezone
 
 
 class Cliente(models.Model):
+    ESTADO_MAU = 'MAU'
+    ESTADO_REGULAR = 'REGULAR'
+    ESTADO_BOM = 'BOM'
+    ESTADO_CHOICES = [
+        (ESTADO_MAU, 'MAU'),
+        (ESTADO_REGULAR, 'REGULAR'),
+        (ESTADO_BOM, 'BOM'),
+    ]
     FORMA_PAGAMENTO_PIX = 'PIX'
     FORMA_PAGAMENTO_CARTAO_CREDITO = 'CARTAO CREDITO'
     FORMA_PAGAMENTO_CHOICES = [
@@ -20,6 +28,13 @@ class Cliente(models.Model):
     ]
 
     name = models.CharField(max_length=255, default='', db_index=True)
+    estado = models.CharField(
+        max_length=20,
+        choices=ESTADO_CHOICES,
+        default=ESTADO_REGULAR,
+        db_index=True,
+    )
+    descricao_estado = models.TextField(blank=True, default='')
     nicho_atuacao = models.CharField(max_length=255, default='', blank=True)
     valor_investido = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     forma_pagamento = models.CharField(

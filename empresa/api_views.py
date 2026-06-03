@@ -73,10 +73,24 @@ def _parse_periodo_cobranca(raw_value):
     return value, None
 
 
+def _parse_estado(raw_value):
+    value = str(raw_value or '').strip().upper()
+    valid_values = {
+        Cliente.ESTADO_MAU,
+        Cliente.ESTADO_REGULAR,
+        Cliente.ESTADO_BOM,
+    }
+    if value not in valid_values:
+        return None, 'Campo estado invalido. Valores permitidos: MAU, REGULAR, BOM.'
+    return value, None
+
+
 def _serialize_cliente(cliente: Cliente) -> dict:
     return {
         'id': cliente.id,
         'name': cliente.name,
+        'estado': cliente.estado,
+        'descricao_estado': cliente.descricao_estado,
         'nicho_atuacao': cliente.nicho_atuacao,
         'valor_investido': cliente.valor_investido,
         'forma_pagamento': cliente.forma_pagamento,
@@ -284,6 +298,17 @@ def cliente_detail(request, cliente_id: int):
 
     if 'nicho_atuacao' in request.data:
         cliente.nicho_atuacao = str(request.data.get('nicho_atuacao') or '').strip()
+        has_updates = True
+
+    if 'estado' in request.data:
+        estado, estado_error = _parse_estado(request.data.get('estado'))
+        if estado_error is not None:
+            return Response({'detail': estado_error}, status=status.HTTP_400_BAD_REQUEST)
+        cliente.estado = estado
+        has_updates = True
+
+    if 'descricao_estado' in request.data:
+        cliente.descricao_estado = str(request.data.get('descricao_estado') or '').strip()
         has_updates = True
 
     if 'forma_pagamento' in request.data:
