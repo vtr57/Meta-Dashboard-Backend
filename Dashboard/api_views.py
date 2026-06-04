@@ -557,7 +557,16 @@ def _fetch_account_budgets_from_graph(client, ad_account_id):
     return float(total)
 
 
-def _fetch_live_report_metrics(dashboard_user, accessible_accounts, *, ad_account=None, campaign=None, date_start, date_end):
+def _fetch_live_report_metrics(
+    dashboard_user,
+    accessible_accounts,
+    *,
+    ad_account=None,
+    campaign=None,
+    date_start,
+    date_end,
+    include_budget=True,
+):
     if not dashboard_user.has_valid_long_token():
         raise MetaClientError('Long token ausente ou expirado.')
 
@@ -578,21 +587,22 @@ def _fetch_live_report_metrics(dashboard_user, accessible_accounts, *, ad_accoun
         'messaging_conversations_started': None,
     }
 
-    try:
-        if campaign is not None:
-            metrics['budget'] = _fetch_campaign_budget_from_graph(client, campaign.id_meta_campaign)
-        else:
-            budget_total = Decimal('0')
-            budget_found = False
-            for account_id in scope_ids:
-                account_budget = _fetch_account_budgets_from_graph(client, account_id)
-                if account_budget is None:
-                    continue
-                budget_total += Decimal(str(account_budget))
-                budget_found = True
-            metrics['budget'] = float(budget_total) if budget_found else None
-    except MetaClientError:
-        logger.exception('Falha ao consultar orcamento do relatorio Meta.')
+    if include_budget:
+        try:
+            if campaign is not None:
+                metrics['budget'] = _fetch_campaign_budget_from_graph(client, campaign.id_meta_campaign)
+            else:
+                budget_total = Decimal('0')
+                budget_found = False
+                for account_id in scope_ids:
+                    account_budget = _fetch_account_budgets_from_graph(client, account_id)
+                    if account_budget is None:
+                        continue
+                    budget_total += Decimal(str(account_budget))
+                    budget_found = True
+                metrics['budget'] = float(budget_total) if budget_found else None
+        except MetaClientError:
+            logger.exception('Falha ao consultar orcamento do relatorio Meta.')
 
     try:
         video_total = Decimal('0')
@@ -625,6 +635,85 @@ def _fetch_live_report_metrics(dashboard_user, accessible_accounts, *, ad_accoun
         logger.exception('Falha ao consultar metricas complementares do relatorio Meta.')
 
     return metrics
+
+
+def _build_report_metrics(qs, live_metrics):
+    totals = qs.aggregate(
+        spend_total=Sum('gasto_diario'),
+        impressions_total=Sum('impressao_diaria'),
+        reach_total=Sum('alcance_diario'),
+        results_total=Sum('quantidade_results_diaria'),
+        clicks_total=Sum('quantidade_clicks_diaria'),
+    )
+
+    spend_total = _to_float(totals['spend_total'])
+    impressions_total = _to_int(totals['impressions_total'])
+    reach_total = _to_int(totals['reach_total'])
+    results_total = _to_int(totals['results_total'])
+    clicks_total = _to_int(totals['clicks_total'])
+
+    messaging_conversations_started = live_metrics['messaging_conversations_started']
+    if messaging_conversations_started is None:
+        messaging_conversations_started = float(results_total)
+
+    video_3s_views = live_metrics['video_3s_views']
+    budget = live_metrics['budget']
+
+    cpr = (spend_total / results_total) if results_total > 0 else None
+    cpc = (spend_total / clicks_total) if clicks_total > 0 else None
+    ctr = _safe_div(clicks_total, impressions_total, 100.0)
+    cpm = _safe_div(spend_total, impressions_total, 1000.0)
+    frequency = _safe_div(impressions_total, reach_total, 1.0)
+    video_rate = None if video_3s_views is None else _safe_div(video_3s_views, impressions_total, 100.0)
+    messaging_conversion_rate = (
+        None if messaging_conversations_started is None else _safe_div(messaging_conversations_started, clicks_total, 100.0)
+    )
+
+    return {
+        'orcamento': _round_or_none(budget, 2),
+        'valor_usado': round(spend_total, 4),
+        'resultados': results_total,
+        'custo_por_resultado': _round_or_none(cpr),
+        'cpc_link': _round_or_none(cpc),
+        'ctr_link': round(ctr, 4),
+        'taxa_video_3s_por_impressoes': _round_or_none(video_rate),
+        'tx_conversao_envio_mensagem': _round_or_none(messaging_conversion_rate),
+        'cpm': round(cpm, 4),
+        'alcance': reach_total,
+        'frequencia': round(frequency, 4),
+        'impressoes': impressions_total,
+        'cliques_link': clicks_total,
+        'visualizacoes_video_3s': _round_or_none(video_3s_views),
+        'conversas_mensagens_iniciadas': _round_or_none(messaging_conversations_started),
+    }
+
+
+def _get_previous_period_range(date_start, date_end):
+    period_days = (date_end - date_start).days + 1
+    previous_end = date_start - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=period_days - 1)
+    return previous_start, previous_end
+
+
+def _calculate_percent_change(current_value, previous_value):
+    if current_value is None or previous_value is None:
+        return None
+
+    current = _to_float(current_value)
+    previous = _to_float(previous_value)
+    if previous == 0.0:
+        return 0.0 if current == 0.0 else None
+
+    return ((current - previous) / previous) * 100.0
+
+
+def _build_metric_changes(current_metrics, previous_metrics):
+    changes = {}
+    for key, current_value in current_metrics.items():
+        if key == 'orcamento':
+            continue
+        changes[key] = _round_or_none(_calculate_percent_change(current_value, previous_metrics.get(key)))
+    return changes
 
 
 def _ad_accounts_for_dashboard_user(dashboard_user: DashboardUser):
@@ -982,20 +1071,6 @@ def meta_report_summary(request):
     if selected_campaign is not None:
         qs = qs.filter(id_meta_campaign=selected_campaign)
 
-    totals = qs.aggregate(
-        spend_total=Sum('gasto_diario'),
-        impressions_total=Sum('impressao_diaria'),
-        reach_total=Sum('alcance_diario'),
-        results_total=Sum('quantidade_results_diaria'),
-        clicks_total=Sum('quantidade_clicks_diaria'),
-    )
-
-    spend_total = _to_float(totals['spend_total'])
-    impressions_total = _to_int(totals['impressions_total'])
-    reach_total = _to_int(totals['reach_total'])
-    results_total = _to_int(totals['results_total'])
-    clicks_total = _to_int(totals['clicks_total'])
-
     live_metrics = _fetch_live_report_metrics(
         dashboard_user,
         accessible_accounts,
@@ -1004,49 +1079,43 @@ def meta_report_summary(request):
         date_start=date_start,
         date_end=date_end,
     )
+    metrics = _build_report_metrics(qs, live_metrics)
 
-    messaging_conversations_started = live_metrics['messaging_conversations_started']
-    if messaging_conversations_started is None:
-        messaging_conversations_started = float(results_total)
-
-    video_3s_views = live_metrics['video_3s_views']
-    budget = live_metrics['budget']
-
-    cpr = (spend_total / results_total) if results_total > 0 else None
-    cpc = (spend_total / clicks_total) if clicks_total > 0 else None
-    ctr = _safe_div(clicks_total, impressions_total, 100.0)
-    cpm = _safe_div(spend_total, impressions_total, 1000.0)
-    frequency = _safe_div(impressions_total, reach_total, 1.0)
-    video_rate = None if video_3s_views is None else _safe_div(video_3s_views, impressions_total, 100.0)
-    messaging_conversion_rate = (
-        None if messaging_conversations_started is None else _safe_div(messaging_conversations_started, clicks_total, 100.0)
+    previous_date_start, previous_date_end = _get_previous_period_range(date_start, date_end)
+    previous_qs = CampaignInsightDaily.objects.filter(
+        id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
+        created_at__gte=previous_date_start,
+        created_at__lte=previous_date_end,
     )
+    if selected_account is not None:
+        previous_qs = previous_qs.filter(id_meta_campaign__id_meta_ad_account=selected_account)
+    if selected_campaign is not None:
+        previous_qs = previous_qs.filter(id_meta_campaign=selected_campaign)
+
+    previous_live_metrics = _fetch_live_report_metrics(
+        dashboard_user,
+        accessible_accounts,
+        ad_account=selected_account,
+        campaign=selected_campaign,
+        date_start=previous_date_start,
+        date_end=previous_date_end,
+        include_budget=False,
+    )
+    previous_metrics = _build_report_metrics(previous_qs, previous_live_metrics)
+    metric_changes = _build_metric_changes(metrics, previous_metrics)
 
     return Response(
         {
             'date_start': date_start,
             'date_end': date_end,
+            'previous_date_start': previous_date_start,
+            'previous_date_end': previous_date_end,
             'filters': {
                 'ad_account_id': ad_account_id,
                 'campaign_id': campaign_id,
             },
-            'metrics': {
-                'orcamento': _round_or_none(budget, 2),
-                'valor_usado': round(spend_total, 4),
-                'resultados': results_total,
-                'custo_por_resultado': _round_or_none(cpr),
-                'cpc_link': _round_or_none(cpc),
-                'ctr_link': round(ctr, 4),
-                'taxa_video_3s_por_impressoes': _round_or_none(video_rate),
-                'tx_conversao_envio_mensagem': _round_or_none(messaging_conversion_rate),
-                'cpm': round(cpm, 4),
-                'alcance': reach_total,
-                'frequencia': round(frequency, 4),
-                'impressoes': impressions_total,
-                'cliques_link': clicks_total,
-                'visualizacoes_video_3s': _round_or_none(video_3s_views),
-                'conversas_mensagens_iniciadas': _round_or_none(messaging_conversations_started),
-            },
+            'metrics': metrics,
+            'metric_changes': metric_changes,
         },
         status=status.HTTP_200_OK,
     )

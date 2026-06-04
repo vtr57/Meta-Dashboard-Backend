@@ -318,6 +318,24 @@ class MetaDashboardEndpointsTests(TestCase):
 
         CampaignInsightDaily.objects.create(
             id_meta_campaign=self.campaign,
+            created_at=date(2025, 12, 30),
+            gasto_diario='5',
+            impressao_diaria=80,
+            alcance_diario=40,
+            quantidade_results_diaria=2,
+            quantidade_clicks_diaria=10,
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=self.campaign,
+            created_at=date(2025, 12, 31),
+            gasto_diario='10',
+            impressao_diaria=120,
+            alcance_diario=60,
+            quantidade_results_diaria=2,
+            quantidade_clicks_diaria=10,
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=self.campaign,
             created_at=date(2026, 1, 1),
             gasto_diario='10',
             impressao_diaria=100,
@@ -462,23 +480,35 @@ class MetaDashboardEndpointsTests(TestCase):
 
     def test_meta_report_summary_returns_requested_metrics(self):
         fake_client = Mock()
-        fake_client.paginate.return_value = [
-            {'daily_budget': '5000'},
-            {'lifetime_budget': '12500'},
+        fake_client.paginate.return_value = [{'daily_budget': '5000'}, {'lifetime_budget': '12500'}]
+        fake_client.request_with_retry.side_effect = [
+            {
+                'data': [
+                    {
+                        'actions': [
+                            {
+                                'action_type': 'onsite_conversion.messaging_conversation_started_7d',
+                                'value': '4',
+                            }
+                        ],
+                        'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '60'}],
+                    }
+                ]
+            },
+            {
+                'data': [
+                    {
+                        'actions': [
+                            {
+                                'action_type': 'onsite_conversion.messaging_conversation_started_7d',
+                                'value': '2',
+                            }
+                        ],
+                        'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '20'}],
+                    }
+                ]
+            },
         ]
-        fake_client.request_with_retry.return_value = {
-            'data': [
-                {
-                    'actions': [
-                        {
-                            'action_type': 'onsite_conversion.messaging_conversation_started_7d',
-                            'value': '4',
-                        }
-                    ],
-                    'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '60'}],
-                }
-            ]
-        }
 
         with patch('Dashboard.api_views._make_meta_client_for_dashboard_user', return_value=fake_client):
             response = self.client.get(
@@ -506,8 +536,22 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(metrics['frequencia'], 2.0)
         self.assertEqual(metrics['impressoes'], 300)
         self.assertEqual(metrics['cliques_link'], 30)
+        self.assertEqual(payload['previous_date_start'], '2025-12-30')
+        self.assertEqual(payload['previous_date_end'], '2025-12-31')
+        self.assertEqual(payload['metric_changes']['valor_usado'], 100.0)
+        self.assertEqual(payload['metric_changes']['resultados'], 100.0)
+        self.assertEqual(payload['metric_changes']['custo_por_resultado'], 0.0)
+        self.assertEqual(payload['metric_changes']['cpc_link'], 33.3333)
+        self.assertEqual(payload['metric_changes']['ctr_link'], 0.0)
+        self.assertEqual(payload['metric_changes']['taxa_video_3s_por_impressoes'], 100.0)
+        self.assertAlmostEqual(payload['metric_changes']['tx_conversao_envio_mensagem'], 33.3333, places=3)
+        self.assertEqual(payload['metric_changes']['cpm'], 33.3333)
+        self.assertEqual(payload['metric_changes']['alcance'], 50.0)
+        self.assertEqual(payload['metric_changes']['frequencia'], 0.0)
+        self.assertEqual(payload['metric_changes']['impressoes'], 50.0)
+        self.assertEqual(payload['metric_changes']['cliques_link'], 50.0)
         fake_client.paginate.assert_called_once()
-        fake_client.request_with_retry.assert_called_once()
+        self.assertEqual(fake_client.request_with_retry.call_count, 2)
 
     def test_meta_report_summary_falls_back_when_live_metrics_fail(self):
         fake_client = Mock()
@@ -525,11 +569,16 @@ class MetaDashboardEndpointsTests(TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        metrics = response.json()['metrics']
+        payload = response.json()
+        metrics = payload['metrics']
         self.assertIsNone(metrics['orcamento'])
         self.assertIsNone(metrics['taxa_video_3s_por_impressoes'])
         self.assertEqual(metrics['conversas_mensagens_iniciadas'], 8.0)
         self.assertEqual(metrics['tx_conversao_envio_mensagem'], 26.6667)
+        self.assertIsNone(payload['metric_changes']['taxa_video_3s_por_impressoes'])
+        self.assertEqual(payload['metric_changes']['valor_usado'], 100.0)
+        self.assertAlmostEqual(payload['metric_changes']['tx_conversao_envio_mensagem'], 33.3333, places=3)
+        self.assertEqual(fake_client.request_with_retry.call_count, 2)
 
     def test_meta_report_summary_rejects_inaccessible_campaign(self):
         other_account = AdAccount.objects.create(
