@@ -787,6 +787,54 @@ class MetaSyncStartScopeEndpointsTests(TestCase):
         self.assertIsNone(args[3])
 
     @patch('Dashboard.api_views.threading.Thread')
+    def test_meta_sync_start_meta_accepts_custom_date_range(self, mocked_thread):
+        mocked_thread.return_value = Mock()
+
+        response = self.client.post(
+            '/api/meta/sync/start/meta',
+            data=json.dumps(
+                {
+                    'date_start': '2026-02-01',
+                    'date_end': '2026-02-10',
+                }
+            ),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload['sync_scope'], 'meta')
+        self.assertEqual(payload['date_start'], '2026-02-01')
+        self.assertEqual(payload['date_end'], '2026-02-10')
+
+        args = mocked_thread.call_args.kwargs['args']
+        self.assertEqual(args[1], self.dashboard_user.id)
+        self.assertEqual(args[2], 'meta')
+        self.assertIsNone(args[3])
+        self.assertIsNone(args[4])
+        self.assertEqual(args[5], date(2026, 2, 1))
+        self.assertEqual(args[6], date(2026, 2, 10))
+
+    @patch('Dashboard.api_views.threading.Thread')
+    def test_meta_sync_start_meta_rejects_incomplete_custom_date_range(self, mocked_thread):
+        mocked_thread.return_value = Mock()
+
+        response = self.client.post(
+            '/api/meta/sync/start/meta',
+            data=json.dumps(
+                {
+                    'date_start': '2026-02-01',
+                }
+            ),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()['detail'],
+            'Informe data inicial e data final para usar um periodo personalizado.',
+        )
+        mocked_thread.assert_not_called()
+
+    @patch('Dashboard.api_views.threading.Thread')
     def test_meta_sync_start_instagram_endpoint(self, mocked_thread):
         mocked_thread.return_value = Mock()
 

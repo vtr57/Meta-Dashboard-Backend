@@ -110,19 +110,28 @@ def meta_connection_status(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def meta_sync_start(request):
-    return _start_sync(request, sync_scope='all')
+    date_start, date_end, date_error = _parse_optional_sync_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+    return _start_sync(request, sync_scope='all', date_start=date_start, date_end=date_end)
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def meta_sync_start_meta(request):
-    return _start_sync(request, sync_scope='meta')
+    date_start, date_end, date_error = _parse_optional_sync_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+    return _start_sync(request, sync_scope='meta', date_start=date_start, date_end=date_end)
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def meta_sync_start_instagram(request):
-    return _start_sync(request, sync_scope='instagram')
+    date_start, date_end, date_error = _parse_optional_sync_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+    return _start_sync(request, sync_scope='instagram', date_start=date_start, date_end=date_end)
 
 
 @api_view(['POST'])
@@ -398,6 +407,38 @@ def _parse_date_range(request):
         start = end - timedelta(days=30)
     if start > end:
         return None, None, 'date_start nao pode ser maior que date_end.'
+    return start, end, None
+
+
+def _parse_optional_sync_date_range(request):
+    request_data = getattr(request, 'data', {}) if hasattr(request, 'data') else {}
+    start_raw = (
+        request.query_params.get('date_start')
+        or request.query_params.get('start_date')
+        or request_data.get('date_start')
+        or request_data.get('start_date')
+    )
+    end_raw = (
+        request.query_params.get('date_end')
+        or request.query_params.get('end_date')
+        or request_data.get('date_end')
+        or request_data.get('end_date')
+    )
+
+    if not start_raw and not end_raw:
+        return None, None, None
+    if not start_raw or not end_raw:
+        return None, None, 'Informe data inicial e data final para usar um periodo personalizado.'
+
+    start = parse_date(start_raw)
+    end = parse_date(end_raw)
+    if start is None:
+        return None, None, 'date_start invalida. Use formato YYYY-MM-DD.'
+    if end is None:
+        return None, None, 'date_end invalida. Use formato YYYY-MM-DD.'
+    if start > end:
+        return None, None, 'date_start nao pode ser maior que date_end.'
+
     return start, end, None
 
 
