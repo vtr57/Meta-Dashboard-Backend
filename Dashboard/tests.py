@@ -291,11 +291,13 @@ class MetaDashboardEndpointsTests(TestCase):
             id_meta_campaign='cmp_200',
             id_meta_ad_account=self.ad_account,
             name='Campanha 200',
+            effective_status='ACTIVE',
         )
         self.adset = AdSet.objects.create(
             id_meta_adset='ads_200',
             id_meta_campaign=self.campaign,
             name='AdSet 200',
+            effective_status='PAUSED',
         )
         self.ad = Ad.objects.create(
             id_meta_ad='ad_200',
@@ -390,8 +392,14 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(len(payload['ad_accounts']), 1)
         self.assertEqual(payload['ad_accounts'][0]['id_meta_ad_account'], 'act_200')
         self.assertEqual(payload['campaigns'][0]['id_meta_campaign'], 'cmp_200')
+        self.assertEqual(payload['campaigns'][0]['status_display'], 'ATIVO')
+        self.assertEqual(payload['campaigns'][0]['display_name'], 'Campanha 200 - ATIVO')
         self.assertEqual(payload['adsets'][0]['id_meta_adset'], 'ads_200')
+        self.assertEqual(payload['adsets'][0]['status_display'], 'DESATIVADO')
+        self.assertEqual(payload['adsets'][0]['display_name'], 'AdSet 200 - DESATIVADO')
         self.assertEqual(payload['ads'][0]['id_meta_ad'], 'ad_200')
+        self.assertEqual(payload['ads'][0]['status_display'], 'ATIVO')
+        self.assertEqual(payload['ads'][0]['display_name'], 'Ad 200 - ATIVO')
 
     def test_meta_timeseries_and_kpis(self):
         params = {

@@ -720,6 +720,11 @@ def _ad_accounts_for_dashboard_user(dashboard_user: DashboardUser):
     return AdAccount.objects.accessible_to(dashboard_user)
 
 
+def _meta_delivery_status_label(*, effective_status='', status=''):
+    normalized = str(effective_status or status or '').strip().lower()
+    return 'ATIVO' if normalized == 'active' else 'DESATIVADO'
+
+
 def _build_meta_insight_queryset(dashboard_user: DashboardUser, filters: dict):
     ad_account_id = filters['ad_account_id']
     campaign_id = filters['campaign_id']
@@ -833,10 +838,22 @@ def meta_filters(request):
                     'id_meta_campaign': row.id_meta_campaign,
                     'id_meta_ad_account': row.id_meta_ad_account.id_meta_ad_account,
                     'name': row.name,
+                    'effective_status': row.effective_status,
+                    'status': row.status,
+                    'status_display': _meta_delivery_status_label(
+                        effective_status=row.effective_status,
+                        status=row.status,
+                    ),
+                    'display_name': (
+                        f'{row.name} - '
+                        f'{_meta_delivery_status_label(effective_status=row.effective_status, status=row.status)}'
+                    ).strip(),
                 }
                 for row in campaigns_qs.select_related('id_meta_ad_account').only(
                     'id_meta_campaign',
                     'name',
+                    'status',
+                    'effective_status',
                     'id_meta_ad_account__id_meta_ad_account',
                 )
             ],
@@ -845,10 +862,22 @@ def meta_filters(request):
                     'id_meta_adset': row.id_meta_adset,
                     'id_meta_campaign': row.id_meta_campaign.id_meta_campaign,
                     'name': row.name,
+                    'effective_status': row.effective_status,
+                    'status': row.status,
+                    'status_display': _meta_delivery_status_label(
+                        effective_status=row.effective_status,
+                        status=row.status,
+                    ),
+                    'display_name': (
+                        f'{row.name} - '
+                        f'{_meta_delivery_status_label(effective_status=row.effective_status, status=row.status)}'
+                    ).strip(),
                 }
                 for row in adsets_qs.select_related('id_meta_campaign').only(
                     'id_meta_adset',
                     'name',
+                    'status',
+                    'effective_status',
                     'id_meta_campaign__id_meta_campaign',
                 )
             ],
@@ -857,10 +886,22 @@ def meta_filters(request):
                     'id_meta_ad': row.id_meta_ad,
                     'id_meta_adset': row.id_meta_adset.id_meta_adset,
                     'name': row.name,
+                    'effective_status': row.effective_status,
+                    'status': row.status,
+                    'status_display': _meta_delivery_status_label(
+                        effective_status=row.effective_status,
+                        status=row.status,
+                    ),
+                    'display_name': (
+                        f'{row.name} - '
+                        f'{_meta_delivery_status_label(effective_status=row.effective_status, status=row.status)}'
+                    ).strip(),
                 }
                 for row in ads_qs.select_related('id_meta_adset').only(
                     'id_meta_ad',
                     'name',
+                    'status',
+                    'effective_status',
                     'id_meta_adset__id_meta_adset',
                 )
             ],
