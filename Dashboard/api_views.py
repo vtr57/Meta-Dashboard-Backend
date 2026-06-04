@@ -2,7 +2,7 @@ from datetime import timedelta
 import logging
 import re
 import threading
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 import pandas as pd
@@ -32,6 +32,7 @@ from Dashboard.models import (
     SyncRun,
 )
 from Dashboard.serializers import AnotacoesSerializer, MetaSpecificInsightsSerializer
+from Dashboard.services.meta_client import MetaClientError, MetaGraphClient
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
 
 
@@ -419,6 +420,213 @@ def _get_meta_filter_values(request):
     }
 
 
+def _budget_minor_to_major(value):
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    try:
+        parsed = Decimal(raw)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return float(parsed / Decimal('100'))
+
+
+def _round_or_none(value, digits=4):
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _sum_action_values(rows, accepted_keys):
+    total = Decimal('0')
+    found = False
+    normalized_keys = {str(key or '').strip().lower() for key in accepted_keys}
+
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+
+        action_type = str(row.get('action_type') or row.get('indicator') or '').strip().lower()
+        if action_type in normalized_keys:
+            values = row.get('values')
+            if isinstance(values, list):
+                for value_row in values:
+                    if not isinstance(value_row, dict):
+                        continue
+                    try:
+                        total += Decimal(str(value_row.get('value') or '0'))
+                        found = True
+                    except (InvalidOperation, TypeError, ValueError):
+                        continue
+                continue
+
+            try:
+                total += Decimal(str(row.get('value') or '0'))
+                found = True
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+
+    if not found:
+        return None
+    return float(total)
+
+
+def _extract_live_insights_metrics(payload):
+    metrics = {
+        'video_3s_views': None,
+        'messaging_conversations_started': None,
+    }
+    data_rows = payload.get('data') if isinstance(payload, dict) else None
+    if not isinstance(data_rows, list):
+        return metrics
+
+    video_total = Decimal('0')
+    video_found = False
+    messaging_total = Decimal('0')
+    messaging_found = False
+
+    for row in data_rows:
+        if not isinstance(row, dict):
+            continue
+
+        video_value = _sum_action_values(
+            row.get('video_3_sec_watched_actions') or [],
+            {'video_view', 'video_3_sec_watched_actions'},
+        )
+        if video_value is not None:
+            video_total += Decimal(str(video_value))
+            video_found = True
+
+        messaging_value = _sum_action_values(
+            row.get('actions') or [],
+            {
+                'onsite_conversion.messaging_conversation_started_7d',
+                'onsite_conversion.messaging_first_reply',
+                'onsite_conversion.total_messaging_connection',
+                'onsite_conversion.total_messaging_connection_7d',
+            },
+        )
+        if messaging_value is not None:
+            messaging_total += Decimal(str(messaging_value))
+            messaging_found = True
+
+    metrics['video_3s_views'] = float(video_total) if video_found else None
+    metrics['messaging_conversations_started'] = float(messaging_total) if messaging_found else None
+    return metrics
+
+
+def _make_meta_client_for_dashboard_user(dashboard_user):
+    return MetaGraphClient(
+        access_token=dashboard_user.long_access_token,
+        request_pause_seconds=0.0,
+        max_retries=2,
+        batch_size=50,
+    )
+
+
+def _fetch_campaign_budget_from_graph(client, campaign_id):
+    payload = client.request_with_retry(
+        'GET',
+        campaign_id,
+        params={'fields': 'daily_budget,lifetime_budget,budget_remaining'},
+        entity='meta_report_budget',
+    )
+    for field in ('daily_budget', 'lifetime_budget', 'budget_remaining'):
+        budget = _budget_minor_to_major(payload.get(field) if isinstance(payload, dict) else None)
+        if budget is not None:
+            return budget
+    return None
+
+
+def _fetch_account_budgets_from_graph(client, ad_account_id):
+    total = Decimal('0')
+    found = False
+    for row in client.paginate(
+        f'{ad_account_id}/campaigns',
+        params={'fields': 'daily_budget,lifetime_budget,budget_remaining', 'limit': 200},
+        entity='meta_report_budget',
+    ):
+        for field in ('daily_budget', 'lifetime_budget', 'budget_remaining'):
+            budget = _budget_minor_to_major(row.get(field) if isinstance(row, dict) else None)
+            if budget is not None:
+                total += Decimal(str(budget))
+                found = True
+                break
+    if not found:
+        return None
+    return float(total)
+
+
+def _fetch_live_report_metrics(dashboard_user, accessible_accounts, *, ad_account=None, campaign=None, date_start, date_end):
+    if not dashboard_user.has_valid_long_token():
+        raise MetaClientError('Long token ausente ou expirado.')
+
+    client = _make_meta_client_for_dashboard_user(dashboard_user)
+    time_range = {'since': date_start.isoformat(), 'until': date_end.isoformat()}
+    scope_ids = []
+
+    if campaign is not None:
+        scope_ids = [campaign.id_meta_campaign]
+    elif ad_account is not None:
+        scope_ids = [ad_account.id_meta_ad_account]
+    else:
+        scope_ids = list(accessible_accounts.values_list('id_meta_ad_account', flat=True))
+
+    metrics = {
+        'budget': None,
+        'video_3s_views': None,
+        'messaging_conversations_started': None,
+    }
+
+    try:
+        if campaign is not None:
+            metrics['budget'] = _fetch_campaign_budget_from_graph(client, campaign.id_meta_campaign)
+        else:
+            budget_total = Decimal('0')
+            budget_found = False
+            for account_id in scope_ids:
+                account_budget = _fetch_account_budgets_from_graph(client, account_id)
+                if account_budget is None:
+                    continue
+                budget_total += Decimal(str(account_budget))
+                budget_found = True
+            metrics['budget'] = float(budget_total) if budget_found else None
+    except MetaClientError:
+        logger.exception('Falha ao consultar orcamento do relatorio Meta.')
+
+    try:
+        video_total = Decimal('0')
+        video_found = False
+        messaging_total = Decimal('0')
+        messaging_found = False
+
+        for scope_id in scope_ids:
+            payload = client.request_with_retry(
+                'GET',
+                f'{scope_id}/insights',
+                params={
+                    'fields': 'actions,video_3_sec_watched_actions',
+                    'time_range': f'{{"since":"{time_range["since"]}","until":"{time_range["until"]}"}}',
+                    'limit': 100,
+                },
+                entity='meta_report_live_insights',
+            )
+            current = _extract_live_insights_metrics(payload)
+            if current['video_3s_views'] is not None:
+                video_total += Decimal(str(current['video_3s_views']))
+                video_found = True
+            if current['messaging_conversations_started'] is not None:
+                messaging_total += Decimal(str(current['messaging_conversations_started']))
+                messaging_found = True
+
+        metrics['video_3s_views'] = float(video_total) if video_found else None
+        metrics['messaging_conversations_started'] = float(messaging_total) if messaging_found else None
+    except MetaClientError:
+        logger.exception('Falha ao consultar metricas complementares do relatorio Meta.')
+
+    return metrics
+
+
 def _ad_accounts_for_dashboard_user(dashboard_user: DashboardUser):
     return AdAccount.objects.accessible_to(dashboard_user)
 
@@ -727,6 +935,117 @@ def meta_kpis(request):
                     if correlacao_gasto_resultados is not None
                     else None
                 ),
+            },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def meta_report_summary(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    date_start, date_end, date_error = _parse_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    accessible_accounts = _ad_accounts_for_dashboard_user(dashboard_user)
+    ad_account_id = str(request.query_params.get('ad_account_id') or '').strip()
+    campaign_id = str(request.query_params.get('campaign_id') or '').strip()
+
+    selected_account = None
+    if ad_account_id:
+        selected_account = accessible_accounts.filter(id_meta_ad_account=ad_account_id).first()
+        if selected_account is None:
+            return Response({'detail': 'Ad account invalido para este usuario.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    campaigns_qs = Campaign.objects.filter(id_meta_ad_account__in=accessible_accounts)
+    if selected_account is not None:
+        campaigns_qs = campaigns_qs.filter(id_meta_ad_account=selected_account)
+
+    selected_campaign = None
+    if campaign_id:
+        selected_campaign = campaigns_qs.select_related('id_meta_ad_account').filter(id_meta_campaign=campaign_id).first()
+        if selected_campaign is None:
+            return Response({'detail': 'Campaign invalida para este usuario.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    qs = CampaignInsightDaily.objects.filter(
+        id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
+        created_at__gte=date_start,
+        created_at__lte=date_end,
+    )
+    if selected_account is not None:
+        qs = qs.filter(id_meta_campaign__id_meta_ad_account=selected_account)
+    if selected_campaign is not None:
+        qs = qs.filter(id_meta_campaign=selected_campaign)
+
+    totals = qs.aggregate(
+        spend_total=Sum('gasto_diario'),
+        impressions_total=Sum('impressao_diaria'),
+        reach_total=Sum('alcance_diario'),
+        results_total=Sum('quantidade_results_diaria'),
+        clicks_total=Sum('quantidade_clicks_diaria'),
+    )
+
+    spend_total = _to_float(totals['spend_total'])
+    impressions_total = _to_int(totals['impressions_total'])
+    reach_total = _to_int(totals['reach_total'])
+    results_total = _to_int(totals['results_total'])
+    clicks_total = _to_int(totals['clicks_total'])
+
+    live_metrics = _fetch_live_report_metrics(
+        dashboard_user,
+        accessible_accounts,
+        ad_account=selected_account,
+        campaign=selected_campaign,
+        date_start=date_start,
+        date_end=date_end,
+    )
+
+    messaging_conversations_started = live_metrics['messaging_conversations_started']
+    if messaging_conversations_started is None:
+        messaging_conversations_started = float(results_total)
+
+    video_3s_views = live_metrics['video_3s_views']
+    budget = live_metrics['budget']
+
+    cpr = (spend_total / results_total) if results_total > 0 else None
+    cpc = (spend_total / clicks_total) if clicks_total > 0 else None
+    ctr = _safe_div(clicks_total, impressions_total, 100.0)
+    cpm = _safe_div(spend_total, impressions_total, 1000.0)
+    frequency = _safe_div(impressions_total, reach_total, 1.0)
+    video_rate = None if video_3s_views is None else _safe_div(video_3s_views, impressions_total, 100.0)
+    messaging_conversion_rate = (
+        None if messaging_conversations_started is None else _safe_div(messaging_conversations_started, clicks_total, 100.0)
+    )
+
+    return Response(
+        {
+            'date_start': date_start,
+            'date_end': date_end,
+            'filters': {
+                'ad_account_id': ad_account_id,
+                'campaign_id': campaign_id,
+            },
+            'metrics': {
+                'orcamento': _round_or_none(budget, 2),
+                'valor_usado': round(spend_total, 4),
+                'resultados': results_total,
+                'custo_por_resultado': _round_or_none(cpr),
+                'cpc_link': _round_or_none(cpc),
+                'ctr_link': round(ctr, 4),
+                'taxa_video_3s_por_impressoes': _round_or_none(video_rate),
+                'tx_conversao_envio_mensagem': _round_or_none(messaging_conversion_rate),
+                'cpm': round(cpm, 4),
+                'alcance': reach_total,
+                'frequencia': round(frequency, 4),
+                'impressoes': impressions_total,
+                'cliques_link': clicks_total,
+                'visualizacoes_video_3s': _round_or_none(video_3s_views),
+                'conversas_mensagens_iniciadas': _round_or_none(messaging_conversations_started),
             },
         },
         status=status.HTTP_200_OK,

@@ -460,6 +460,100 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertIsNone(rows_by_ad[1]['cpr'])
         self.assertTrue(all(row['ad_id'] != 'ad_202' for row in rows_by_ad))
 
+    def test_meta_report_summary_returns_requested_metrics(self):
+        fake_client = Mock()
+        fake_client.paginate.return_value = [
+            {'daily_budget': '5000'},
+            {'lifetime_budget': '12500'},
+        ]
+        fake_client.request_with_retry.return_value = {
+            'data': [
+                {
+                    'actions': [
+                        {
+                            'action_type': 'onsite_conversion.messaging_conversation_started_7d',
+                            'value': '4',
+                        }
+                    ],
+                    'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '60'}],
+                }
+            ]
+        }
+
+        with patch('Dashboard.api_views._make_meta_client_for_dashboard_user', return_value=fake_client):
+            response = self.client.get(
+                '/api/meta/report-summary',
+                {
+                    'ad_account_id': 'act_200',
+                    'date_start': '2026-01-01',
+                    'date_end': '2026-01-02',
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        metrics = payload['metrics']
+        self.assertEqual(metrics['orcamento'], 175.0)
+        self.assertEqual(metrics['valor_usado'], 30.0)
+        self.assertEqual(metrics['resultados'], 8)
+        self.assertEqual(metrics['custo_por_resultado'], 3.75)
+        self.assertEqual(metrics['cpc_link'], 1.0)
+        self.assertEqual(metrics['ctr_link'], 10.0)
+        self.assertEqual(metrics['taxa_video_3s_por_impressoes'], 20.0)
+        self.assertEqual(metrics['tx_conversao_envio_mensagem'], 13.3333)
+        self.assertEqual(metrics['cpm'], 100.0)
+        self.assertEqual(metrics['alcance'], 150)
+        self.assertEqual(metrics['frequencia'], 2.0)
+        self.assertEqual(metrics['impressoes'], 300)
+        self.assertEqual(metrics['cliques_link'], 30)
+        fake_client.paginate.assert_called_once()
+        fake_client.request_with_retry.assert_called_once()
+
+    def test_meta_report_summary_falls_back_when_live_metrics_fail(self):
+        fake_client = Mock()
+        fake_client.paginate.side_effect = MetaClientError('budget unavailable')
+        fake_client.request_with_retry.side_effect = MetaClientError('insights unavailable')
+
+        with patch('Dashboard.api_views._make_meta_client_for_dashboard_user', return_value=fake_client):
+            response = self.client.get(
+                '/api/meta/report-summary',
+                {
+                    'ad_account_id': 'act_200',
+                    'date_start': '2026-01-01',
+                    'date_end': '2026-01-02',
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        metrics = response.json()['metrics']
+        self.assertIsNone(metrics['orcamento'])
+        self.assertIsNone(metrics['taxa_video_3s_por_impressoes'])
+        self.assertEqual(metrics['conversas_mensagens_iniciadas'], 8.0)
+        self.assertEqual(metrics['tx_conversao_envio_mensagem'], 26.6667)
+
+    def test_meta_report_summary_rejects_inaccessible_campaign(self):
+        other_account = AdAccount.objects.create(
+            id_meta_ad_account='act_201',
+            name='Conta 201',
+            id_dashboard_user=self.dashboard_user,
+        )
+        Campaign.objects.create(
+            id_meta_campaign='cmp_201',
+            id_meta_ad_account=other_account,
+            name='Campanha 201',
+        )
+
+        response = self.client.get(
+            '/api/meta/report-summary',
+            {
+                'ad_account_id': 'act_200',
+                'campaign_id': 'cmp_201',
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'Campaign invalida para este usuario.')
+
     def test_shared_ad_account_is_visible_to_second_user(self):
         other_user = User.objects.create_user(username='carol-shared', password='Secret123!')
         other_dashboard_user = DashboardUser.objects.create(
