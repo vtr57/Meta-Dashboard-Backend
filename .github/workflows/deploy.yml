@@ -1,4 +1,4 @@
-name: Test SSH Backend
+name: Deploy Backend
 
 on:
   push:
@@ -6,11 +6,11 @@ on:
       - main
 
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test SSH
+      - name: Deploy Backend
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -18,9 +18,13 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           timeout: 60s
-          command_timeout: 60s
+          command_timeout: 180s
           script: |
-            whoami
-            hostname
-            pwd
-            date
+            set -e
+            cd /opt/vdashboard/backend
+            git pull origin main
+            source .venv/bin/activate
+            pip install -r requirements.txt
+            python manage.py migrate
+            python manage.py collectstatic --noinput
+            sudo systemctl restart vdashboard
