@@ -17,6 +17,12 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from loginFacebook import views as login_facebook_views
+from django.http import JsonResponse
+
+
+def health_check(request):
+    return JsonResponse({"status": "ok"})
+
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -37,6 +43,7 @@ urlpatterns = [
         name='politica-de-privacidade-slash',
     ),
     path('auth/', include('Dashboard.urls')),
+    path("api/health/", health_check),
     path('api/facebook-auth/', include('loginFacebook.urls')),
     path('api/meta/', include('Dashboard.meta_urls')),
     path('api/instagram/', include('Dashboard.instagram_urls')),

@@ -13,8 +13,14 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import importlib.util
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 from dotenv import load_dotenv
+
+try:
+    import dj_database_url
+except ImportError:  # pragma: no cover - optional dependency during local checks
+    dj_database_url = None
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -24,11 +30,55 @@ load_dotenv(BASE_DIR / '.env')
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _database_config_from_url(database_url: str, conn_max_age: int) -> dict:
+    if dj_database_url is not None:
+        return dj_database_url.parse(database_url, conn_max_age=conn_max_age)
+
+    parsed = urlparse(database_url)
+    engine_map = {
+        'postgres': 'django.db.backends.postgresql',
+        'postgresql': 'django.db.backends.postgresql',
+        'pgsql': 'django.db.backends.postgresql',
+    }
+    engine = engine_map.get(parsed.scheme)
+    if not engine:
+        raise ValueError(
+            'DATABASE_URL usa um esquema nao suportado sem dj-database-url instalado.'
+        )
+
+    options = {}
+    query = parse_qs(parsed.query or '')
+    sslmode = (query.get('sslmode') or [None])[0]
+    if sslmode:
+        options['sslmode'] = sslmode
+
+    database_config = {
+        'ENGINE': engine,
+        'NAME': unquote(parsed.path.lstrip('/')),
+        'USER': unquote(parsed.username or ''),
+        'PASSWORD': unquote(parsed.password or ''),
+        'HOST': parsed.hostname or '',
+        'PORT': str(parsed.port or ''),
+        'CONN_MAX_AGE': conn_max_age,
+    }
+    if options:
+        database_config['OPTIONS'] = options
+    return database_config
+
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-local-dev-only')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DJANGO_DEBUG', '1').lower() in {'1', 'true', 'yes', 'on'}
+DEBUG = _env_flag('DJANGO_DEBUG', default=True)
 
 ALLOWED_HOSTS = [host.strip() for host in os.getenv('DJANGO_ALLOWED_HOSTS', '127.0.0.1,localhost').split(',') if host.strip()]
 
@@ -86,15 +136,29 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
+database_url = str(os.getenv('DATABASE_URL', '') or '').strip()
+db_conn_max_age = int(str(os.getenv('DB_CONN_MAX_AGE', '60') or '60').strip())
+db_sslmode = str(os.getenv('DB_SSLMODE', os.getenv('DATABASE_SSL_MODE', '')) or '').strip()
+
+if database_url:
+    default_database = _database_config_from_url(database_url, conn_max_age=db_conn_max_age)
+else:
+    default_database = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.getenv('DB_NAME', 'meta_dashboard'),
         'USER': os.getenv('DB_USER', 'postgres'),
         'PASSWORD': os.getenv('DB_PASSWORD', 'password'),
         'HOST': os.getenv('DB_HOST', 'localhost'),
         'PORT': os.getenv('DB_PORT', '5432'),
+        'CONN_MAX_AGE': db_conn_max_age,
     }
+
+if db_sslmode:
+    default_database.setdefault('OPTIONS', {})
+    default_database['OPTIONS']['sslmode'] = db_sslmode
+
+DATABASES = {
+    'default': default_database,
 }
 
 
@@ -133,7 +197,9 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATIC_ROOT = Path(str(os.getenv('STATIC_ROOT') or (BASE_DIR / 'staticfiles')))
+MEDIA_URL = '/media/'
+MEDIA_ROOT = Path(str(os.getenv('MEDIA_ROOT') or (BASE_DIR / 'media')))
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -179,7 +245,10 @@ _default_frontend_origins = [
 # Ex.: https://seu-frontend.vercel.app
 CORS_ALLOWED_ORIGINS = _merge_unique(
     _default_frontend_origins,
-    _parse_csv_env('CORS_ALLOWED_ORIGINS', strip_trailing_slash=True),
+    _merge_unique(
+        _parse_csv_env('CORS_ALLOWED_ORIGINS', strip_trailing_slash=True),
+        _parse_csv_env('DJANGO_CORS_ALLOWED_ORIGINS', strip_trailing_slash=True),
+    ),
 )
 
 # Opcional para ambientes com domínios dinâmicos (ex.: previews)
@@ -193,20 +262,29 @@ CORS_ALLOWED_ORIGIN_REGEXES = _merge_unique(
 # Ex.: CSRF_TRUSTED_ORIGINS=https://seu-frontend.vercel.app
 CSRF_TRUSTED_ORIGINS = _merge_unique(
     _default_frontend_origins,
-    _parse_csv_env('CSRF_TRUSTED_ORIGINS', strip_trailing_slash=True),
+    _merge_unique(
+        _parse_csv_env('CSRF_TRUSTED_ORIGINS', strip_trailing_slash=True),
+        _parse_csv_env('DJANGO_CSRF_TRUSTED_ORIGINS', strip_trailing_slash=True),
+    ),
 )
 
-SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_HTTPONLY = _env_flag('SESSION_COOKIE_HTTPONLY', default=True)
 _default_same_site = 'None' if not DEBUG else 'Lax'
 SESSION_COOKIE_SAMESITE = os.getenv('SESSION_COOKIE_SAMESITE', _default_same_site)
 CSRF_COOKIE_SAMESITE = os.getenv('CSRF_COOKIE_SAMESITE', _default_same_site)
 X_FRAME_OPTIONS = 'DENY'
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = _env_flag('DJANGO_USE_X_FORWARDED_HOST', default=True)
+SECURE_SSL_REDIRECT = _env_flag('DJANGO_SECURE_SSL_REDIRECT', default=False)
+SECURE_HSTS_SECONDS = int(str(os.getenv('SECURE_HSTS_SECONDS', '0') or '0').strip())
+SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_flag('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False)
+SECURE_HSTS_PRELOAD = _env_flag('SECURE_HSTS_PRELOAD', default=False)
+
+SESSION_COOKIE_SECURE = _env_flag('SESSION_COOKIE_SECURE', default=not DEBUG)
+CSRF_COOKIE_SECURE = _env_flag('CSRF_COOKIE_SECURE', default=not DEBUG)
 
 if not DEBUG:
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
     STORAGES = {
         'default': {
             'BACKEND': 'django.core.files.storage.FileSystemStorage',
@@ -219,3 +297,8 @@ if not DEBUG:
 META_GRAPH_VERSION = os.getenv('META_GRAPH_VERSION', 'v24.0')
 META_APP_ID = os.getenv('META_APP_ID', '')
 META_APP_SECRET = os.getenv('META_APP_SECRET', '')
+FRONTEND_CONNECTION_URL = os.getenv('FRONTEND_CONNECTION_URL', '')
+FACEBOOK_LOGIN_SCOPE = os.getenv(
+    'FACEBOOK_LOGIN_SCOPE',
+    'public_profile,email,business_management,ads_read,pages_read_engagement,instagram_basic',
+)
