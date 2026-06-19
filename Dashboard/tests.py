@@ -439,7 +439,7 @@ class MetaDashboardEndpointsTests(TestCase):
 
         payload = response.json()
         self.assertEqual(payload['level'], 'ad_account')
-        self.assertEqual(payload['filters']['ad_id'], '')
+        self.assertIn(payload['filters']['ad_ids'], [[], '[]'])
 
         timeseries_daily = payload['timeseries_daily']
         self.assertEqual(
@@ -485,6 +485,100 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(rows_by_ad[1]['spend'], 7.0)
         self.assertIsNone(rows_by_ad[1]['cpr'])
         self.assertTrue(all(row['ad_id'] != 'ad_202' for row in rows_by_ad))
+
+    def test_meta_filters_accept_multiple_parent_ids(self):
+        ad_account_secondary = AdAccount.objects.create(
+            id_meta_ad_account='act_201',
+            name='Conta 201',
+            id_dashboard_user=self.dashboard_user,
+        )
+        campaign_secondary = Campaign.objects.create(
+            id_meta_campaign='cmp_201',
+            id_meta_ad_account=ad_account_secondary,
+            name='Campanha 201',
+            effective_status='PAUSED',
+        )
+        adset_secondary = AdSet.objects.create(
+            id_meta_adset='ads_201',
+            id_meta_campaign=campaign_secondary,
+            name='AdSet 201',
+            effective_status='ACTIVE',
+        )
+        Ad.objects.create(
+            id_meta_ad='ad_210',
+            id_meta_adset=adset_secondary,
+            name='Ad 210',
+            effective_status='ACTIVE',
+        )
+
+        response = self.client.get(
+            '/api/meta/filters',
+            {
+                'ad_account_id': ['act_200', 'act_201'],
+                'campaign_id': ['cmp_200', 'cmp_201'],
+                'adset_id': ['ads_200', 'ads_201'],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['filters']['ad_account_ids'], ['act_200', 'act_201'])
+        self.assertEqual(payload['filters']['campaign_ids'], ['cmp_200', 'cmp_201'])
+        self.assertEqual(payload['filters']['adset_ids'], ['ads_200', 'ads_201'])
+        self.assertEqual({row['id_meta_campaign'] for row in payload['campaigns']}, {'cmp_200', 'cmp_201'})
+        self.assertEqual({row['id_meta_adset'] for row in payload['adsets']}, {'ads_200', 'ads_201'})
+        self.assertEqual({row['id_meta_ad'] for row in payload['ads']}, {'ad_200', 'ad_201', 'ad_202', 'ad_210'})
+
+    def test_meta_timeseries_and_kpis_accept_multiple_accounts(self):
+        ad_account_secondary = AdAccount.objects.create(
+            id_meta_ad_account='act_201',
+            name='Conta 201',
+            id_dashboard_user=self.dashboard_user,
+        )
+        campaign_secondary = Campaign.objects.create(
+            id_meta_campaign='cmp_201',
+            id_meta_ad_account=ad_account_secondary,
+            name='Campanha 201',
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=campaign_secondary,
+            created_at=date(2026, 1, 1),
+            gasto_diario='4',
+            impressao_diaria=40,
+            alcance_diario=20,
+            quantidade_results_diaria=2,
+            quantidade_clicks_diaria=4,
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=campaign_secondary,
+            created_at=date(2026, 1, 2),
+            gasto_diario='6',
+            impressao_diaria=60,
+            alcance_diario=30,
+            quantidade_results_diaria=1,
+            quantidade_clicks_diaria=6,
+        )
+
+        params = {
+            'ad_account_id': ['act_200', 'act_201'],
+            'date_start': '2026-01-01',
+            'date_end': '2026-01-02',
+        }
+        timeseries_response = self.client.get('/api/meta/timeseries', params)
+        self.assertEqual(timeseries_response.status_code, 200)
+        self.assertEqual(timeseries_response.json()['filters']['ad_account_ids'], ['act_200', 'act_201'])
+        series = timeseries_response.json()['series']
+        self.assertEqual(series[0]['spend'], 14.0)
+        self.assertEqual(series[1]['clicks'], 16)
+
+        kpi_response = self.client.get('/api/meta/kpis', params)
+        self.assertEqual(kpi_response.status_code, 200)
+        kpis = kpi_response.json()['kpis']
+        self.assertAlmostEqual(kpis['gasto_total'], 40.0, places=4)
+        self.assertEqual(kpis['impressao_total'], 400)
+        self.assertEqual(kpis['alcance_total'], 200)
+        self.assertEqual(kpis['results_total'], 11)
+        self.assertAlmostEqual(kpis['ctr_medio'], 10.0, places=4)
 
     def test_meta_report_summary_returns_requested_metrics(self):
         fake_client = Mock()
@@ -560,6 +654,116 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(payload['metric_changes']['cliques_link'], 50.0)
         fake_client.paginate.assert_called_once()
         self.assertEqual(fake_client.request_with_retry.call_count, 2)
+
+    def test_meta_report_summary_aggregates_multiple_accounts(self):
+        ad_account_secondary = AdAccount.objects.create(
+            id_meta_ad_account='act_201',
+            name='Conta 201',
+            id_dashboard_user=self.dashboard_user,
+        )
+        campaign_secondary = Campaign.objects.create(
+            id_meta_campaign='cmp_201',
+            id_meta_ad_account=ad_account_secondary,
+            name='Campanha 201',
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=campaign_secondary,
+            created_at=date(2025, 12, 30),
+            gasto_diario='2',
+            impressao_diaria=20,
+            alcance_diario=10,
+            quantidade_results_diaria=1,
+            quantidade_clicks_diaria=2,
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=campaign_secondary,
+            created_at=date(2025, 12, 31),
+            gasto_diario='3',
+            impressao_diaria=30,
+            alcance_diario=15,
+            quantidade_results_diaria=1,
+            quantidade_clicks_diaria=3,
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=campaign_secondary,
+            created_at=date(2026, 1, 1),
+            gasto_diario='4',
+            impressao_diaria=40,
+            alcance_diario=20,
+            quantidade_results_diaria=2,
+            quantidade_clicks_diaria=4,
+        )
+        CampaignInsightDaily.objects.create(
+            id_meta_campaign=campaign_secondary,
+            created_at=date(2026, 1, 2),
+            gasto_diario='6',
+            impressao_diaria=60,
+            alcance_diario=30,
+            quantidade_results_diaria=1,
+            quantidade_clicks_diaria=6,
+        )
+
+        fake_client = Mock()
+        fake_client.paginate.side_effect = [
+            [{'daily_budget': '5000'}],
+            [{'daily_budget': '3000'}],
+        ]
+        fake_client.request_with_retry.side_effect = [
+            {
+                'data': [
+                    {
+                        'actions': [{'action_type': 'onsite_conversion.messaging_conversation_started_7d', 'value': '4'}],
+                        'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '60'}],
+                    }
+                ]
+            },
+            {
+                'data': [
+                    {
+                        'actions': [{'action_type': 'onsite_conversion.messaging_conversation_started_7d', 'value': '1'}],
+                        'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '10'}],
+                    }
+                ]
+            },
+            {
+                'data': [
+                    {
+                        'actions': [{'action_type': 'onsite_conversion.messaging_conversation_started_7d', 'value': '2'}],
+                        'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '20'}],
+                    }
+                ]
+            },
+            {
+                'data': [
+                    {
+                        'actions': [{'action_type': 'onsite_conversion.messaging_conversation_started_7d', 'value': '1'}],
+                        'video_3_sec_watched_actions': [{'action_type': 'video_view', 'value': '10'}],
+                    }
+                ]
+            },
+        ]
+
+        with patch('Dashboard.api_views._make_meta_client_for_dashboard_user', return_value=fake_client):
+            response = self.client.get(
+                '/api/meta/report-summary',
+                {
+                    'ad_account_id': ['act_200', 'act_201'],
+                    'date_start': '2026-01-01',
+                    'date_end': '2026-01-02',
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['filters']['ad_account_ids'], ['act_200', 'act_201'])
+        self.assertEqual(payload['metrics']['orcamento'], 80.0)
+        self.assertEqual(payload['metrics']['valor_usado'], 40.0)
+        self.assertEqual(payload['metrics']['resultados'], 11)
+        self.assertEqual(payload['metrics']['taxa_video_3s_por_impressoes'], 17.5)
+        self.assertEqual(payload['metrics']['tx_conversao_envio_mensagem'], 12.5)
+        self.assertEqual(payload['metric_changes']['valor_usado'], 100.0)
+        self.assertEqual(fake_client.paginate.call_count, 2)
+        self.assertEqual(fake_client.request_with_retry.call_count, 4)
 
     def test_meta_report_summary_falls_back_when_live_metrics_fail(self):
         fake_client = Mock()

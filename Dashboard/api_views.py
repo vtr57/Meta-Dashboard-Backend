@@ -453,11 +453,32 @@ def _get_dashboard_user_or_error(request):
 
 
 def _get_meta_filter_values(request):
+    def _parse_query_values(param_name):
+        raw_values = []
+        raw_values.extend(request.query_params.getlist(param_name))
+        raw_values.extend(request.query_params.getlist(f'{param_name}[]'))
+        if not raw_values:
+            single_value = request.query_params.get(param_name) or request.query_params.get(f'{param_name}[]') or ''
+            if isinstance(single_value, str) and ',' in single_value:
+                raw_values.extend(single_value.split(','))
+            elif single_value:
+                raw_values.append(single_value)
+
+        normalized = []
+        seen = set()
+        for raw in raw_values:
+            value = str(raw or '').strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized
+
     return {
-        'ad_account_id': str(request.query_params.get('ad_account_id') or '').strip(),
-        'campaign_id': str(request.query_params.get('campaign_id') or '').strip(),
-        'adset_id': str(request.query_params.get('adset_id') or '').strip(),
-        'ad_id': str(request.query_params.get('ad_id') or '').strip(),
+        'ad_account_ids': _parse_query_values('ad_account_id'),
+        'campaign_ids': _parse_query_values('campaign_id'),
+        'adset_ids': _parse_query_values('adset_id'),
+        'ad_ids': _parse_query_values('ad_id'),
     }
 
 
@@ -602,8 +623,8 @@ def _fetch_live_report_metrics(
     dashboard_user,
     accessible_accounts,
     *,
-    ad_account=None,
-    campaign=None,
+    ad_account_ids,
+    campaign_ids,
     date_start,
     date_end,
     include_budget=True,
@@ -615,10 +636,10 @@ def _fetch_live_report_metrics(
     time_range = {'since': date_start.isoformat(), 'until': date_end.isoformat()}
     scope_ids = []
 
-    if campaign is not None:
-        scope_ids = [campaign.id_meta_campaign]
-    elif ad_account is not None:
-        scope_ids = [ad_account.id_meta_ad_account]
+    if campaign_ids:
+        scope_ids = list(campaign_ids)
+    elif ad_account_ids:
+        scope_ids = list(ad_account_ids)
     else:
         scope_ids = list(accessible_accounts.values_list('id_meta_ad_account', flat=True))
 
@@ -630,12 +651,20 @@ def _fetch_live_report_metrics(
 
     if include_budget:
         try:
-            if campaign is not None:
-                metrics['budget'] = _fetch_campaign_budget_from_graph(client, campaign.id_meta_campaign)
+            if campaign_ids:
+                budget_total = Decimal('0')
+                budget_found = False
+                for campaign_id in campaign_ids:
+                    campaign_budget = _fetch_campaign_budget_from_graph(client, campaign_id)
+                    if campaign_budget is None:
+                        continue
+                    budget_total += Decimal(str(campaign_budget))
+                    budget_found = True
+                metrics['budget'] = float(budget_total) if budget_found else None
             else:
                 budget_total = Decimal('0')
                 budget_found = False
-                for account_id in scope_ids:
+                for account_id in ad_account_ids or scope_ids:
                     account_budget = _fetch_account_budgets_from_graph(client, account_id)
                     if account_budget is None:
                         continue
@@ -761,81 +790,114 @@ def _ad_accounts_for_dashboard_user(dashboard_user: DashboardUser):
     return AdAccount.objects.accessible_to(dashboard_user)
 
 
+def _ids_match_queryset(queryset, field_name, ids):
+    if not ids:
+        return True
+    return queryset.filter(**{f'{field_name}__in': ids}).values_list(field_name, flat=True).distinct().count() == len(ids)
+
+
+def _resolve_meta_filter_context(dashboard_user: DashboardUser, filters: dict):
+    selected_ad_account_ids = filters['ad_account_ids']
+    selected_campaign_ids = filters['campaign_ids']
+    selected_adset_ids = filters['adset_ids']
+    selected_ad_ids = filters['ad_ids']
+
+    accessible_accounts = _ad_accounts_for_dashboard_user(dashboard_user)
+    if selected_ad_account_ids and not _ids_match_queryset(accessible_accounts, 'id_meta_ad_account', selected_ad_account_ids):
+        raise ValueError('Ad account invalido para este usuario.')
+    ad_account_scope = (
+        accessible_accounts.filter(id_meta_ad_account__in=selected_ad_account_ids)
+        if selected_ad_account_ids
+        else accessible_accounts
+    )
+
+    campaigns_scope = Campaign.objects.filter(id_meta_ad_account__in=ad_account_scope)
+    if selected_campaign_ids and not _ids_match_queryset(campaigns_scope, 'id_meta_campaign', selected_campaign_ids):
+        raise ValueError('Campaign invalida para este usuario.')
+    campaign_scope = (
+        campaigns_scope.filter(id_meta_campaign__in=selected_campaign_ids) if selected_campaign_ids else campaigns_scope
+    )
+
+    adsets_scope = AdSet.objects.filter(id_meta_campaign__in=campaign_scope)
+    if selected_adset_ids and not _ids_match_queryset(adsets_scope, 'id_meta_adset', selected_adset_ids):
+        raise ValueError('Adset invalido para este usuario.')
+    adset_scope = adsets_scope.filter(id_meta_adset__in=selected_adset_ids) if selected_adset_ids else adsets_scope
+
+    ads_scope = Ad.objects.filter(id_meta_adset__in=adset_scope)
+    if selected_ad_ids and not _ids_match_queryset(ads_scope, 'id_meta_ad', selected_ad_ids):
+        raise ValueError('Ad invalido para este usuario.')
+    ad_scope = ads_scope.filter(id_meta_ad__in=selected_ad_ids) if selected_ad_ids else ads_scope
+
+    return {
+        'accessible_accounts': accessible_accounts,
+        'ad_account_scope': ad_account_scope,
+        'campaigns_scope': campaigns_scope,
+        'campaign_scope': campaign_scope,
+        'adsets_scope': adsets_scope,
+        'adset_scope': adset_scope,
+        'ads_scope': ads_scope,
+        'ad_scope': ad_scope,
+        'filters': filters,
+    }
+
+
+def _serialize_meta_filter_values(filters: dict):
+    return {
+        'ad_account_ids': filters['ad_account_ids'],
+        'campaign_ids': filters['campaign_ids'],
+        'adset_ids': filters['adset_ids'],
+        'ad_ids': filters['ad_ids'],
+    }
+
+
 def _meta_delivery_status_label(*, effective_status='', status=''):
     normalized = str(effective_status or status or '').strip().lower()
     return 'ATIVO' if normalized == 'active' else 'DESATIVADO'
 
 
 def _build_meta_insight_queryset(dashboard_user: DashboardUser, filters: dict):
-    ad_account_id = filters['ad_account_id']
-    campaign_id = filters['campaign_id']
-    adset_id = filters['adset_id']
-    ad_id = filters['ad_id']
-    accessible_accounts = _ad_accounts_for_dashboard_user(dashboard_user)
+    context = _resolve_meta_filter_context(dashboard_user, filters)
+    ad_account_scope = context['ad_account_scope']
+    campaign_scope = context['campaign_scope']
+    adset_scope = context['adset_scope']
+    ad_scope = context['ad_scope']
 
-    if ad_id:
+    if filters['ad_ids']:
         level = 'ad'
-        qs = AdInsightDaily.objects.filter(
-            id_meta_ad__id_meta_ad=ad_id,
-            id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
-        )
-        if ad_account_id:
-            qs = qs.filter(
-                id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id
-            )
-        if campaign_id:
-            qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_campaign=campaign_id)
-        if adset_id:
-            qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_adset=adset_id)
+        qs = AdInsightDaily.objects.filter(id_meta_ad__in=ad_scope)
         return level, qs
 
-    if adset_id:
+    if filters['adset_ids']:
         level = 'adset'
-        qs = AdSetInsightDaily.objects.filter(
-            id_meta_adset__id_meta_adset=adset_id,
-            id_meta_adset__id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
-        )
-        if ad_account_id:
-            qs = qs.filter(id_meta_adset__id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
-        if campaign_id:
-            qs = qs.filter(id_meta_adset__id_meta_campaign__id_meta_campaign=campaign_id)
+        qs = AdSetInsightDaily.objects.filter(id_meta_adset__in=adset_scope)
         return level, qs
 
-    if campaign_id:
+    if filters['campaign_ids']:
         level = 'campaign'
-        qs = CampaignInsightDaily.objects.filter(
-            id_meta_campaign__id_meta_campaign=campaign_id,
-            id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
-        )
-        if ad_account_id:
-            qs = qs.filter(id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
+        qs = CampaignInsightDaily.objects.filter(id_meta_campaign__in=campaign_scope)
         return level, qs
 
     level = 'ad_account'
-    qs = CampaignInsightDaily.objects.filter(id_meta_campaign__id_meta_ad_account__in=accessible_accounts)
-    if ad_account_id:
-        qs = qs.filter(id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
+    qs = CampaignInsightDaily.objects.filter(id_meta_campaign__id_meta_ad_account__in=ad_account_scope)
     return level, qs
 
 
 def _build_meta_specific_ad_queryset(dashboard_user: DashboardUser, filters: dict):
-    ad_account_id = filters['ad_account_id']
-    campaign_id = filters['campaign_id']
-    adset_id = filters['adset_id']
-    accessible_accounts = _ad_accounts_for_dashboard_user(dashboard_user)
+    context = _resolve_meta_filter_context(dashboard_user, filters)
+    ad_account_scope = context['ad_account_scope']
+    campaign_scope = context['campaign_scope']
+    adset_scope = context['adset_scope']
 
     qs = AdInsightDaily.objects.filter(
-        id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__in=accessible_accounts
+        id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__in=ad_account_scope
     ).filter(id_meta_ad__effective_status__iexact='active')
     level = 'ad_account'
 
-    if ad_account_id:
-        qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__id_meta_ad_account=ad_account_id)
-    if campaign_id:
-        qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_campaign=campaign_id)
+    if filters['campaign_ids']:
+        qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_campaign__in=campaign_scope)
         level = 'campaign'
-    if adset_id:
-        qs = qs.filter(id_meta_ad__id_meta_adset__id_meta_adset=adset_id)
+    if filters['adset_ids']:
+        qs = qs.filter(id_meta_ad__id_meta_adset__in=adset_scope)
         level = 'adset'
 
     return level, qs
@@ -848,25 +910,16 @@ def meta_filters(request):
     if error_response:
         return error_response
 
-    ad_account_id = str(request.query_params.get('ad_account_id') or '').strip()
-    campaign_id = str(request.query_params.get('campaign_id') or '').strip()
-    adset_id = str(request.query_params.get('adset_id') or '').strip()
+    filters = _get_meta_filter_values(request)
+    try:
+        context = _resolve_meta_filter_context(dashboard_user, filters)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    ad_accounts_qs = _ad_accounts_for_dashboard_user(dashboard_user).order_by('name', 'id_meta_ad_account')
-    campaigns_qs = Campaign.objects.filter(id_meta_ad_account__in=ad_accounts_qs)
-    if ad_account_id:
-        campaigns_qs = campaigns_qs.filter(id_meta_ad_account__id_meta_ad_account=ad_account_id)
-    campaigns_qs = campaigns_qs.order_by('name', 'id_meta_campaign')
-
-    adsets_qs = AdSet.objects.filter(id_meta_campaign__in=campaigns_qs)
-    if campaign_id:
-        adsets_qs = adsets_qs.filter(id_meta_campaign__id_meta_campaign=campaign_id)
-    adsets_qs = adsets_qs.order_by('name', 'id_meta_adset')
-
-    ads_qs = Ad.objects.filter(id_meta_adset__in=adsets_qs)
-    if adset_id:
-        ads_qs = ads_qs.filter(id_meta_adset__id_meta_adset=adset_id)
-    ads_qs = ads_qs.order_by('name', 'id_meta_ad')
+    ad_accounts_qs = context['accessible_accounts'].order_by('name', 'id_meta_ad_account')
+    campaigns_qs = context['campaigns_scope'].order_by('name', 'id_meta_campaign')
+    adsets_qs = context['adsets_scope'].order_by('name', 'id_meta_adset')
+    ads_qs = context['ads_scope'].order_by('name', 'id_meta_ad')
 
     return Response(
         {
@@ -946,6 +999,7 @@ def meta_filters(request):
                     'id_meta_adset__id_meta_adset',
                 )
             ],
+            'filters': _serialize_meta_filter_values(filters),
         },
         status=status.HTTP_200_OK,
     )
@@ -1011,7 +1065,10 @@ def meta_timeseries(request):
         return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
 
     filters = _get_meta_filter_values(request)
-    level, qs = _build_meta_insight_queryset(dashboard_user, filters)
+    try:
+        level, qs = _build_meta_insight_queryset(dashboard_user, filters)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     qs = qs.filter(created_at__gte=date_start, created_at__lte=date_end)
 
     rows = (
@@ -1043,7 +1100,7 @@ def meta_timeseries(request):
             'level': level,
             'date_start': date_start,
             'date_end': date_end,
-            'filters': filters,
+            'filters': _serialize_meta_filter_values(filters),
             'series': series,
         },
         status=status.HTTP_200_OK,
@@ -1062,7 +1119,10 @@ def meta_kpis(request):
         return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
 
     filters = _get_meta_filter_values(request)
-    level, qs = _build_meta_insight_queryset(dashboard_user, filters)
+    try:
+        level, qs = _build_meta_insight_queryset(dashboard_user, filters)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     qs = qs.filter(created_at__gte=date_start, created_at__lte=date_end)
 
     totals = qs.aggregate(
@@ -1090,7 +1150,7 @@ def meta_kpis(request):
             'level': level,
             'date_start': date_start,
             'date_end': date_end,
-            'filters': filters,
+            'filters': _serialize_meta_filter_values(filters),
             'kpis': {
                 'gasto_total': round(spend_total, 4),
                 'impressao_total': impressions_total,
@@ -1123,41 +1183,31 @@ def meta_report_summary(request):
     if date_error:
         return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
 
-    accessible_accounts = _ad_accounts_for_dashboard_user(dashboard_user)
-    ad_account_id = str(request.query_params.get('ad_account_id') or '').strip()
-    campaign_id = str(request.query_params.get('campaign_id') or '').strip()
+    filters = _get_meta_filter_values(request)
+    try:
+        context = _resolve_meta_filter_context(dashboard_user, filters)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    selected_account = None
-    if ad_account_id:
-        selected_account = accessible_accounts.filter(id_meta_ad_account=ad_account_id).first()
-        if selected_account is None:
-            return Response({'detail': 'Ad account invalido para este usuario.'}, status=status.HTTP_400_BAD_REQUEST)
-
-    campaigns_qs = Campaign.objects.filter(id_meta_ad_account__in=accessible_accounts)
-    if selected_account is not None:
-        campaigns_qs = campaigns_qs.filter(id_meta_ad_account=selected_account)
-
-    selected_campaign = None
-    if campaign_id:
-        selected_campaign = campaigns_qs.select_related('id_meta_ad_account').filter(id_meta_campaign=campaign_id).first()
-        if selected_campaign is None:
-            return Response({'detail': 'Campaign invalida para este usuario.'}, status=status.HTTP_400_BAD_REQUEST)
+    accessible_accounts = context['accessible_accounts']
+    ad_account_scope = context['ad_account_scope']
+    campaign_scope = context['campaign_scope']
 
     qs = CampaignInsightDaily.objects.filter(
         id_meta_campaign__id_meta_ad_account__in=accessible_accounts,
         created_at__gte=date_start,
         created_at__lte=date_end,
     )
-    if selected_account is not None:
-        qs = qs.filter(id_meta_campaign__id_meta_ad_account=selected_account)
-    if selected_campaign is not None:
-        qs = qs.filter(id_meta_campaign=selected_campaign)
+    if filters['campaign_ids']:
+        qs = qs.filter(id_meta_campaign__in=campaign_scope)
+    else:
+        qs = qs.filter(id_meta_campaign__id_meta_ad_account__in=ad_account_scope)
 
     live_metrics = _fetch_live_report_metrics(
         dashboard_user,
         accessible_accounts,
-        ad_account=selected_account,
-        campaign=selected_campaign,
+        ad_account_ids=list(ad_account_scope.values_list('id_meta_ad_account', flat=True)),
+        campaign_ids=list(campaign_scope.values_list('id_meta_campaign', flat=True)) if filters['campaign_ids'] else [],
         date_start=date_start,
         date_end=date_end,
     )
@@ -1169,16 +1219,16 @@ def meta_report_summary(request):
         created_at__gte=previous_date_start,
         created_at__lte=previous_date_end,
     )
-    if selected_account is not None:
-        previous_qs = previous_qs.filter(id_meta_campaign__id_meta_ad_account=selected_account)
-    if selected_campaign is not None:
-        previous_qs = previous_qs.filter(id_meta_campaign=selected_campaign)
+    if filters['campaign_ids']:
+        previous_qs = previous_qs.filter(id_meta_campaign__in=campaign_scope)
+    else:
+        previous_qs = previous_qs.filter(id_meta_campaign__id_meta_ad_account__in=ad_account_scope)
 
     previous_live_metrics = _fetch_live_report_metrics(
         dashboard_user,
         accessible_accounts,
-        ad_account=selected_account,
-        campaign=selected_campaign,
+        ad_account_ids=list(ad_account_scope.values_list('id_meta_ad_account', flat=True)),
+        campaign_ids=list(campaign_scope.values_list('id_meta_campaign', flat=True)) if filters['campaign_ids'] else [],
         date_start=previous_date_start,
         date_end=previous_date_end,
         include_budget=False,
@@ -1192,10 +1242,7 @@ def meta_report_summary(request):
             'date_end': date_end,
             'previous_date_start': previous_date_start,
             'previous_date_end': previous_date_end,
-            'filters': {
-                'ad_account_id': ad_account_id,
-                'campaign_id': campaign_id,
-            },
+            'filters': _serialize_meta_filter_values(filters),
             'metrics': metrics,
             'metric_changes': metric_changes,
         },
@@ -1216,12 +1263,15 @@ def meta_specific_insights(request):
 
     raw_filters = _get_meta_filter_values(request)
     filters = {
-        'ad_account_id': raw_filters['ad_account_id'],
-        'campaign_id': raw_filters['campaign_id'],
-        'adset_id': raw_filters['adset_id'],
-        'ad_id': '',
+        'ad_account_ids': raw_filters['ad_account_ids'],
+        'campaign_ids': raw_filters['campaign_ids'],
+        'adset_ids': raw_filters['adset_ids'],
+        'ad_ids': [],
     }
-    level, qs = _build_meta_specific_ad_queryset(dashboard_user, filters)
+    try:
+        level, qs = _build_meta_specific_ad_queryset(dashboard_user, filters)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     qs = qs.filter(created_at__gte=date_start, created_at__lte=date_end)
 
     daily_rows = (
@@ -1253,7 +1303,7 @@ def meta_specific_insights(request):
         'level': level,
         'date_start': date_start,
         'date_end': date_end,
-        'filters': filters,
+        'filters': _serialize_meta_filter_values(filters),
         'timeseries_daily': [
             {
                 'date': row['created_at'],
