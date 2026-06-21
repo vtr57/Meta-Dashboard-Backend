@@ -46,6 +46,7 @@ urlpatterns = [
     path("api/health/", health_check),
     path('api/facebook-auth/', include('loginFacebook.urls')),
     path('api/meta/', include('Dashboard.meta_urls')),
+    path('api/statistics/', include('Dashboard.statistics_urls')),
     path('api/instagram/', include('Dashboard.instagram_urls')),
     path('api/empresa/', include('empresa.urls')),
 ]

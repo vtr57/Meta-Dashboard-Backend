@@ -34,6 +34,7 @@ from Dashboard.models import (
 from Dashboard.serializers import AnotacoesSerializer, MetaSpecificInsightsSerializer
 from Dashboard.services.meta_client import MetaClientError, MetaGraphClient
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
+from Dashboard.services.statistics_service import build_statistics_analysis
 
 
 logger = logging.getLogger(__name__)
@@ -1245,6 +1246,175 @@ def meta_report_summary(request):
             'filters': _serialize_meta_filter_values(filters),
             'metrics': metrics,
             'metric_changes': metric_changes,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+def _statistics_queryset_context(dashboard_user, filters):
+    context = _resolve_meta_filter_context(dashboard_user, filters)
+    if filters['ad_ids']:
+        return {
+            'level': 'ad',
+            'selected_entity_ids': filters['ad_ids'],
+            'queryset': AdInsightDaily.objects.filter(id_meta_ad__in=context['ad_scope']),
+        }
+    if filters['adset_ids']:
+        return {
+            'level': 'adset',
+            'selected_entity_ids': filters['adset_ids'],
+            'queryset': AdSetInsightDaily.objects.filter(id_meta_adset__in=context['adset_scope']),
+        }
+    if filters['campaign_ids']:
+        return {
+            'level': 'campaign',
+            'selected_entity_ids': filters['campaign_ids'],
+            'queryset': CampaignInsightDaily.objects.filter(id_meta_campaign__in=context['campaign_scope']),
+        }
+    return {
+        'level': 'ad_account',
+        'selected_entity_ids': filters['ad_account_ids'],
+        'queryset': CampaignInsightDaily.objects.filter(
+            id_meta_campaign__id_meta_ad_account__in=context['ad_account_scope']
+        ),
+    }
+
+
+def _serialize_statistics_rows(queryset, level, date_start, date_end):
+    queryset = queryset.filter(created_at__gte=date_start, created_at__lte=date_end).order_by('created_at')
+    if level == 'ad':
+        values = queryset.values(
+            'id_meta_ad__id_meta_ad',
+            'id_meta_ad__name',
+            'created_at',
+            'gasto_diario',
+            'impressao_diaria',
+            'alcance_diario',
+            'quantidade_results_diaria',
+            'quantidade_clicks_diaria',
+        )
+        id_field = 'id_meta_ad__id_meta_ad'
+        name_field = 'id_meta_ad__name'
+    elif level == 'adset':
+        values = queryset.values(
+            'id_meta_adset__id_meta_adset',
+            'id_meta_adset__name',
+            'created_at',
+            'gasto_diario',
+            'impressao_diaria',
+            'alcance_diario',
+            'quantidade_results_diaria',
+            'quantidade_clicks_diaria',
+        )
+        id_field = 'id_meta_adset__id_meta_adset'
+        name_field = 'id_meta_adset__name'
+    elif level == 'campaign':
+        values = queryset.values(
+            'id_meta_campaign__id_meta_campaign',
+            'id_meta_campaign__name',
+            'created_at',
+            'gasto_diario',
+            'impressao_diaria',
+            'alcance_diario',
+            'quantidade_results_diaria',
+            'quantidade_clicks_diaria',
+        )
+        id_field = 'id_meta_campaign__id_meta_campaign'
+        name_field = 'id_meta_campaign__name'
+    else:
+        values = queryset.values(
+            'id_meta_campaign__id_meta_ad_account__id_meta_ad_account',
+            'id_meta_campaign__id_meta_ad_account__name',
+            'created_at',
+            'gasto_diario',
+            'impressao_diaria',
+            'alcance_diario',
+            'quantidade_results_diaria',
+            'quantidade_clicks_diaria',
+        )
+        id_field = 'id_meta_campaign__id_meta_ad_account__id_meta_ad_account'
+        name_field = 'id_meta_campaign__id_meta_ad_account__name'
+
+    return [
+        {
+            'entity_id': row[id_field],
+            'entity_name': row[name_field],
+            'date': row['created_at'],
+            'spend': _to_float(row['gasto_diario']),
+            'impressions': _to_int(row['impressao_diaria']),
+            'reach': _to_int(row['alcance_diario']),
+            'results': _to_int(row['quantidade_results_diaria']),
+            'clicks': _to_int(row['quantidade_clicks_diaria']),
+        }
+        for row in values
+    ]
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def statistics_analysis(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    date_start, date_end, date_error = _parse_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    filters = _get_meta_filter_values(request)
+    try:
+        statistics_context = _statistics_queryset_context(dashboard_user, filters)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    compare = str(request.query_params.get('compare', 'true')).strip().lower() not in {
+        '0',
+        'false',
+        'no',
+        'nao',
+        'não',
+    }
+    level = statistics_context['level']
+    queryset = statistics_context['queryset']
+    current_rows = _serialize_statistics_rows(queryset, level, date_start, date_end)
+
+    previous_date_start = None
+    previous_date_end = None
+    previous_rows = []
+    if compare:
+        previous_date_start, previous_date_end = _get_previous_period_range(date_start, date_end)
+        previous_rows = _serialize_statistics_rows(
+            queryset,
+            level,
+            previous_date_start,
+            previous_date_end,
+        )
+
+    analysis = build_statistics_analysis(
+        current_rows=current_rows,
+        previous_rows=previous_rows,
+        compare=compare,
+        entity_type=level,
+        selected_entity_ids=statistics_context['selected_entity_ids'],
+    )
+    analysis['segments']['breakdown'] = str(request.query_params.get('breakdown') or '').strip() or None
+
+    return Response(
+        {
+            'meta': {
+                'analysis_level': level,
+                'date_start': date_start,
+                'date_end': date_end,
+                'compare': compare,
+                'previous_date_start': previous_date_start,
+                'previous_date_end': previous_date_end,
+                'filters': _serialize_meta_filter_values(filters),
+                'result_semantics': (
+                    'Resultados refletem o objetivo configurado na campanha e podem representar leads, '
+                    'mensagens ou outra ação.'
+                ),
+            },
+            **analysis,
         },
         status=status.HTTP_200_OK,
     )
