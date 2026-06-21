@@ -14,6 +14,7 @@ from Dashboard.models import (
 )
 from Dashboard.services.statistics_clustering_service import build_clustering_analysis
 from Dashboard.services.statistics_service import build_correlations
+from Dashboard.services.statistics_time_series_service import build_time_series_analysis
 from Dashboard.services.statistics_utils import (
     deterministic_kmeans,
     descriptive_statistics,
@@ -22,6 +23,7 @@ from Dashboard.services.statistics_utils import (
     percent_change,
     safe_ratio,
     standardize_matrix,
+    strict_moving_average,
     two_proportion_z_test,
 )
 
@@ -41,6 +43,106 @@ class StatisticsUtilsTests(TestCase):
         self.assertEqual(stats['sample_size'], 4)
         self.assertEqual(stats['stability_label'], 'estável')
         self.assertLess(stats['coefficient_of_variation'], 0.25)
+
+    def test_strict_moving_average_waits_for_complete_window(self):
+        self.assertEqual(strict_moving_average([1, 2, 3, 4], 3), [None, None, 2.0, 3.0])
+        self.assertEqual(strict_moving_average([1, None, 3], 3), [None, None, None])
+
+    def test_time_series_service_calculates_formulas_forecast_and_goal(self):
+        rows = [
+            {
+                'date': date(2026, 2, day),
+                'spend': day * 10,
+                'impressions': day * 100,
+                'reach': day * 80,
+                'clicks': day * 10,
+                'results': day * 2,
+            }
+            for day in range(1, 15)
+        ]
+        result = build_time_series_analysis(
+            rows=rows,
+            date_start=date(2026, 2, 1),
+            date_end=date(2026, 2, 14),
+            metric='cpl',
+            forecast_days=7,
+            goal_leads=100,
+        )
+
+        first = result['daily_series'][0]
+        self.assertEqual(first['ctr'], 0.1)
+        self.assertEqual(first['cpc'], 1.0)
+        self.assertEqual(first['cpm'], 100.0)
+        self.assertEqual(first['cpl'], 5.0)
+        self.assertEqual(first['frequency'], 1.25)
+        self.assertEqual(first['conversion_rate'], 0.2)
+        self.assertIsNone(result['moving_averages']['3']['points'][1]['moving_average'])
+        self.assertEqual(result['moving_averages']['3']['points'][2]['moving_average'], 5.0)
+        self.assertTrue(result['trend']['available'])
+        self.assertTrue(result['forecast']['available'])
+        self.assertEqual(len(result['forecast']['points']), 7)
+        self.assertTrue(result['goal_projection']['available'])
+        self.assertEqual(result['goal_projection']['estimated_required_spend'], 500.0)
+
+    def test_time_series_service_handles_zero_division_and_small_sample(self):
+        result = build_time_series_analysis(
+            rows=[
+                {
+                    'date': date(2026, 3, 1),
+                    'spend': 20,
+                    'impressions': 0,
+                    'reach': 0,
+                    'clicks': 0,
+                    'results': 0,
+                },
+                {
+                    'date': date(2026, 3, 2),
+                    'spend': 30,
+                    'impressions': 0,
+                    'reach': 0,
+                    'clicks': 0,
+                    'results': 0,
+                },
+            ],
+            date_start=date(2026, 3, 1),
+            date_end=date(2026, 3, 2),
+            metric='cpl',
+            forecast_days=7,
+            goal_leads=50,
+        )
+
+        first = result['daily_series'][0]
+        self.assertIsNone(first['ctr'])
+        self.assertIsNone(first['cpc'])
+        self.assertIsNone(first['cpl'])
+        self.assertIsNone(first['frequency'])
+        self.assertFalse(result['forecast']['available'])
+        self.assertFalse(result['goal_projection']['available'])
+        self.assertEqual(result['anomalies'], [])
+
+    def test_time_series_service_detects_z_score_anomaly_and_constant_series(self):
+        rows = [
+            {
+                'date': date(2026, 4, day),
+                'spend': 1000 if day == 14 else 10,
+                'impressions': 1000,
+                'reach': 800,
+                'clicks': 100,
+                'results': 20,
+            }
+            for day in range(1, 15)
+        ]
+        result = build_time_series_analysis(
+            rows=rows,
+            date_start=date(2026, 4, 1),
+            date_end=date(2026, 4, 14),
+            metric='spend',
+            forecast_days=7,
+            goal_leads=None,
+        )
+
+        self.assertTrue(any(item['metric'] == 'spend' for item in result['anomalies']))
+        self.assertFalse(any(item['metric'] == 'ctr' for item in result['anomalies']))
 
     def test_two_proportion_test_detects_relevant_difference(self):
         result = two_proportion_z_test(300, 10000, 220, 10000)
@@ -288,6 +390,81 @@ class StatisticsAnalysisEndpointTests(TestCase):
     def test_analysis_requires_authentication(self):
         response = Client().get('/api/statistics/analysis')
         self.assertEqual(response.status_code, 403)
+
+    def test_time_series_returns_modular_payload_and_proxy_semantics(self):
+        response = self.client.get(
+            '/api/statistics/time-series',
+            {
+                'ad_account_ids': 'act_stats',
+                'campaign_ids': ['cmp_stats_a', 'cmp_stats_b'],
+                'date_start': '2026-01-01',
+                'date_end': '2026-01-04',
+                'metric': 'cpl',
+                'forecast_days': '7',
+                'goal_leads': '100',
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['metric'], 'cpl')
+        self.assertEqual(payload['meta']['analysis_level'], 'campaign')
+        self.assertEqual(payload['meta']['filters']['campaign_ids'], ['cmp_stats_a', 'cmp_stats_b'])
+        self.assertEqual(payload['period']['days_with_data'], 4)
+        self.assertEqual(len(payload['daily_series']), 4)
+        self.assertIn('proxy', payload['meta']['result_semantics'])
+        self.assertIn('3', payload['moving_averages'])
+        self.assertIn('7', payload['moving_averages'])
+        self.assertIn('14', payload['moving_averages'])
+        self.assertTrue(payload['forecast']['available'])
+        self.assertTrue(payload['goal_projection']['available'])
+
+    def test_time_series_validates_parameters_and_authentication(self):
+        invalid_metric = self.client.get(
+            '/api/statistics/time-series',
+            {'metric': 'receita', 'date_start': '2026-01-01', 'date_end': '2026-01-04'},
+        )
+        self.assertEqual(invalid_metric.status_code, 400)
+
+        invalid_forecast = self.client.get(
+            '/api/statistics/time-series',
+            {'forecast_days': '31', 'date_start': '2026-01-01', 'date_end': '2026-01-04'},
+        )
+        self.assertEqual(invalid_forecast.status_code, 400)
+
+        invalid_goal = self.client.get(
+            '/api/statistics/time-series',
+            {'goal_leads': '0', 'date_start': '2026-01-01', 'date_end': '2026-01-04'},
+        )
+        self.assertEqual(invalid_goal.status_code, 400)
+
+        anonymous = Client().get('/api/statistics/time-series')
+        self.assertEqual(anonymous.status_code, 403)
+
+    def test_time_series_rejects_account_outside_user_scope(self):
+        other_user = User.objects.create_user(username='time-series-other', password='Secret123!')
+        other_dashboard_user = DashboardUser.objects.create(
+            user=other_user,
+            id_meta_user='meta-time-series-other',
+            long_access_token='token',
+        )
+        AdAccount.objects.create(
+            id_meta_ad_account='act_time_series_other',
+            name='Conta Temporal Externa',
+            id_dashboard_user=other_dashboard_user,
+        )
+
+        response = self.client.get(
+            '/api/statistics/time-series',
+            {
+                'ad_account_ids': 'act_time_series_other',
+                'date_start': '2026-01-01',
+                'date_end': '2026-01-04',
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['detail'], 'Ad account invalido para este usuario.')
 
     def test_clustering_returns_campaign_groups_and_reduces_clusters(self):
         for index in range(3):

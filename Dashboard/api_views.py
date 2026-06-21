@@ -36,6 +36,10 @@ from Dashboard.services.meta_client import MetaClientError, MetaGraphClient
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
 from Dashboard.services.statistics_clustering_service import build_clustering_analysis
 from Dashboard.services.statistics_service import build_statistics_analysis
+from Dashboard.services.statistics_time_series_service import (
+    METRIC_CONFIG as TIME_SERIES_METRIC_CONFIG,
+    build_time_series_analysis,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1461,6 +1465,77 @@ def statistics_analysis(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def statistics_time_series(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    date_start, date_end, date_error = _parse_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    metric = str(request.query_params.get('metric') or 'cpl').strip().lower()
+    if metric not in TIME_SERIES_METRIC_CONFIG:
+        valid_metrics = ', '.join(TIME_SERIES_METRIC_CONFIG)
+        return Response(
+            {'detail': f'Métrica inválida. Use uma destas opções: {valid_metrics}.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        forecast_days = int(request.query_params.get('forecast_days') or 7)
+    except (TypeError, ValueError):
+        forecast_days = 0
+    if forecast_days < 1 or forecast_days > 30:
+        return Response(
+            {'detail': 'forecast_days deve ser um número inteiro entre 1 e 30.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    goal_leads = None
+    raw_goal_leads = str(request.query_params.get('goal_leads') or '').strip()
+    if raw_goal_leads:
+        try:
+            goal_leads = float(Decimal(raw_goal_leads))
+        except (InvalidOperation, TypeError, ValueError):
+            goal_leads = 0
+        if goal_leads <= 0:
+            return Response(
+                {'detail': 'goal_leads deve ser um número positivo.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    filters = _get_meta_filter_values(request)
+    try:
+        statistics_context = _statistics_queryset_context(dashboard_user, filters)
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    rows = _serialize_statistics_rows(
+        statistics_context['queryset'],
+        statistics_context['level'],
+        date_start,
+        date_end,
+    )
+    analysis = build_time_series_analysis(
+        rows=rows,
+        date_start=date_start,
+        date_end=date_end,
+        metric=metric,
+        forecast_days=forecast_days,
+        goal_leads=goal_leads,
+    )
+    analysis['meta'].update(
+        {
+            'analysis_level': statistics_context['level'],
+            'filters': _serialize_meta_filter_values(filters),
+        }
+    )
+    return Response(analysis, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])

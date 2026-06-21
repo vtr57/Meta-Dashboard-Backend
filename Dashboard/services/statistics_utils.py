@@ -171,6 +171,22 @@ def moving_average(values, window):
     return averages
 
 
+def strict_moving_average(values, window):
+    if window < 1:
+        raise ValueError('A janela da média móvel deve ser positiva.')
+    averages = []
+    for index in range(len(values)):
+        if index + 1 < window:
+            averages.append(None)
+            continue
+        sample = values[index - window + 1 : index + 1]
+        if any(value is None for value in sample):
+            averages.append(None)
+            continue
+        averages.append(round_or_none(mean(to_number(value) for value in sample)))
+    return averages
+
+
 def linear_trend_slope(values):
     normalized = [to_number(value) for value in values]
     size = len(normalized)
@@ -182,6 +198,23 @@ def linear_trend_slope(values):
     if denominator == 0:
         return None
     numerator = sum((index - x_mean) * (value - y_mean) for index, value in enumerate(normalized))
+    return round_or_none(numerator / denominator)
+
+
+def linear_trend_with_indexes(values):
+    pairs = [
+        (index, to_number(value))
+        for index, value in enumerate(values)
+        if value is not None and math.isfinite(to_number(value))
+    ]
+    if len(pairs) < 2:
+        return None
+    x_mean = mean(index for index, _ in pairs)
+    y_mean = mean(value for _, value in pairs)
+    denominator = sum((index - x_mean) ** 2 for index, _ in pairs)
+    if denominator == 0:
+        return None
+    numerator = sum((index - x_mean) * (value - y_mean) for index, value in pairs)
     return round_or_none(numerator / denominator)
 
 
