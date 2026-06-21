@@ -34,6 +34,7 @@ from Dashboard.models import (
 from Dashboard.serializers import AnotacoesSerializer, MetaSpecificInsightsSerializer
 from Dashboard.services.meta_client import MetaClientError, MetaGraphClient
 from Dashboard.services.meta_sync_orchestrator import MetaSyncOrchestrator
+from Dashboard.services.statistics_clustering_service import build_clustering_analysis
 from Dashboard.services.statistics_service import build_statistics_analysis
 
 
@@ -458,8 +459,16 @@ def _get_meta_filter_values(request):
         raw_values = []
         raw_values.extend(request.query_params.getlist(param_name))
         raw_values.extend(request.query_params.getlist(f'{param_name}[]'))
+        raw_values.extend(request.query_params.getlist(f'{param_name}s'))
+        raw_values.extend(request.query_params.getlist(f'{param_name}s[]'))
         if not raw_values:
-            single_value = request.query_params.get(param_name) or request.query_params.get(f'{param_name}[]') or ''
+            single_value = (
+                request.query_params.get(param_name)
+                or request.query_params.get(f'{param_name}[]')
+                or request.query_params.get(f'{param_name}s')
+                or request.query_params.get(f'{param_name}s[]')
+                or ''
+            )
             if isinstance(single_value, str) and ',' in single_value:
                 raw_values.extend(single_value.split(','))
             elif single_value:
@@ -1280,6 +1289,40 @@ def _statistics_queryset_context(dashboard_user, filters):
     }
 
 
+def _clustering_queryset_context(dashboard_user, filters, entity_type):
+    context = _resolve_meta_filter_context(dashboard_user, filters)
+    if entity_type == 'lead':
+        return {
+            'level': 'lead',
+            'queryset': None,
+        }
+
+    if entity_type == 'campaign':
+        entity_scope = context['campaign_scope']
+        if filters['ad_ids']:
+            entity_scope = entity_scope.filter(adsets__ads__in=context['ad_scope'])
+        elif filters['adset_ids']:
+            entity_scope = entity_scope.filter(adsets__in=context['adset_scope'])
+        return {
+            'level': 'campaign',
+            'queryset': CampaignInsightDaily.objects.filter(id_meta_campaign__in=entity_scope.distinct()),
+        }
+
+    if entity_type == 'adset':
+        entity_scope = context['adset_scope']
+        if filters['ad_ids']:
+            entity_scope = entity_scope.filter(ads__in=context['ad_scope'])
+        return {
+            'level': 'adset',
+            'queryset': AdSetInsightDaily.objects.filter(id_meta_adset__in=entity_scope.distinct()),
+        }
+
+    return {
+        'level': 'ad',
+        'queryset': AdInsightDaily.objects.filter(id_meta_ad__in=context['ad_scope'].distinct()),
+    }
+
+
 def _serialize_statistics_rows(queryset, level, date_start, date_end):
     queryset = queryset.filter(created_at__gte=date_start, created_at__lte=date_end).order_by('created_at')
     if level == 'ad':
@@ -1412,6 +1455,93 @@ def statistics_analysis(request):
                 'result_semantics': (
                     'Resultados refletem o objetivo configurado na campanha e podem representar leads, '
                     'mensagens ou outra ação.'
+                ),
+            },
+            **analysis,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def statistics_clustering(request):
+    dashboard_user, error_response = _get_dashboard_user_or_error(request)
+    if error_response:
+        return error_response
+
+    date_start, date_end, date_error = _parse_date_range(request)
+    if date_error:
+        return Response({'detail': date_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    entity_type = str(request.query_params.get('entity_type') or 'campaign').strip().lower()
+    if entity_type not in {'campaign', 'adset', 'ad', 'lead'}:
+        return Response(
+            {'detail': 'entity_type invalido. Use campaign, adset, ad ou lead.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    algorithm = str(request.query_params.get('algorithm') or 'kmeans').strip().lower()
+    if algorithm != 'kmeans':
+        return Response(
+            {'detail': 'Nesta versão, apenas algorithm=kmeans está disponível.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        requested_clusters = int(request.query_params.get('clusters') or 3)
+    except (TypeError, ValueError):
+        requested_clusters = 0
+    if requested_clusters not in {2, 3, 4, 5}:
+        return Response(
+            {'detail': 'clusters invalido. Use 2, 3, 4 ou 5.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    normalize = str(request.query_params.get('normalize', 'true')).strip().lower() not in {
+        '0',
+        'false',
+        'no',
+        'nao',
+        'não',
+    }
+    filters = _get_meta_filter_values(request)
+    try:
+        clustering_context = _clustering_queryset_context(
+            dashboard_user,
+            filters,
+            entity_type,
+        )
+    except ValueError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    rows = []
+    if clustering_context['queryset'] is not None:
+        rows = _serialize_statistics_rows(
+            clustering_context['queryset'],
+            clustering_context['level'],
+            date_start,
+            date_end,
+        )
+
+    analysis = build_clustering_analysis(
+        rows=rows,
+        entity_type=entity_type,
+        requested_clusters=requested_clusters,
+        normalize=normalize,
+    )
+    return Response(
+        {
+            'meta': {
+                'entity_type': entity_type,
+                'algorithm': algorithm,
+                'requested_clusters': requested_clusters,
+                'date_start': date_start,
+                'date_end': date_end,
+                'filters': _serialize_meta_filter_values(filters),
+                'result_semantics': (
+                    'Resultados refletem o objetivo configurado na campanha e não representam '
+                    'necessariamente vendas ou leads qualificados.'
                 ),
             },
             **analysis,

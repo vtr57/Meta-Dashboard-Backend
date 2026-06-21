@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from statistics import NormalDist, mean, median, pstdev
 
+import numpy as np
 from scipy.stats import ttest_ind
 
 
@@ -228,3 +229,121 @@ def correlation_strength(value):
     if absolute < 0.80:
         return 'forte'
     return 'muito forte'
+
+
+def standardize_matrix(matrix, enabled=True):
+    values = np.asarray(matrix, dtype=float)
+    if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] == 0:
+        return {
+            'matrix': [],
+            'means': [],
+            'standard_deviations': [],
+        }
+
+    means = values.mean(axis=0)
+    standard_deviations = values.std(axis=0)
+    safe_deviations = np.where(standard_deviations == 0, 1.0, standard_deviations)
+    transformed = (values - means) / safe_deviations if enabled else values.copy()
+    return {
+        'matrix': transformed.tolist(),
+        'means': [round_or_none(value) for value in means],
+        'standard_deviations': [round_or_none(value) for value in standard_deviations],
+    }
+
+
+def _initial_kmeans_centroids(values, clusters_count):
+    center = values.mean(axis=0)
+    first_index = int(np.argmax(np.linalg.norm(values - center, axis=1)))
+    selected_indexes = [first_index]
+
+    while len(selected_indexes) < clusters_count:
+        selected = values[selected_indexes]
+        distances = np.min(
+            np.linalg.norm(values[:, np.newaxis, :] - selected[np.newaxis, :, :], axis=2),
+            axis=1,
+        )
+        distances[selected_indexes] = -1
+        selected_indexes.append(int(np.argmax(distances)))
+
+    return values[selected_indexes].copy()
+
+
+def deterministic_kmeans(matrix, clusters_count, max_iterations=100):
+    values = np.asarray(matrix, dtype=float)
+    if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] == 0:
+        raise ValueError('A matriz de clusterização precisa ter linhas e colunas.')
+    if clusters_count < 1 or clusters_count > values.shape[0]:
+        raise ValueError('A quantidade de clusters deve ser compatível com a amostra.')
+
+    centroids = _initial_kmeans_centroids(values, clusters_count)
+    labels = np.zeros(values.shape[0], dtype=int)
+    iterations = 0
+
+    for iteration in range(max_iterations):
+        distances_to_centroids = np.linalg.norm(
+            values[:, np.newaxis, :] - centroids[np.newaxis, :, :],
+            axis=2,
+        )
+        next_labels = np.argmin(distances_to_centroids, axis=1)
+        next_centroids = centroids.copy()
+
+        for cluster_id in range(clusters_count):
+            cluster_values = values[next_labels == cluster_id]
+            if len(cluster_values):
+                next_centroids[cluster_id] = cluster_values.mean(axis=0)
+                continue
+
+            assigned_distances = distances_to_centroids[
+                np.arange(values.shape[0]),
+                next_labels,
+            ]
+            replacement_index = int(np.argmax(assigned_distances))
+            next_centroids[cluster_id] = values[replacement_index]
+            next_labels[replacement_index] = cluster_id
+
+        iterations = iteration + 1
+        if np.array_equal(labels, next_labels) and np.allclose(centroids, next_centroids):
+            labels = next_labels
+            centroids = next_centroids
+            break
+        labels = next_labels
+        centroids = next_centroids
+
+    final_distances = np.linalg.norm(values - centroids[labels], axis=1)
+    return {
+        'labels': labels.tolist(),
+        'centroids': centroids.tolist(),
+        'distances': [round_or_none(value) for value in final_distances],
+        'iterations': iterations,
+    }
+
+
+def pca_projection(matrix, components=2):
+    values = np.asarray(matrix, dtype=float)
+    if values.ndim != 2 or values.shape[0] < 2 or values.shape[1] < components:
+        return {
+            'available': False,
+            'message': 'São necessárias pelo menos duas entidades e duas features válidas para o PCA.',
+            'explained_variance_ratio': [],
+            'points': [],
+        }
+
+    centered = values - values.mean(axis=0)
+    _, singular_values, right_vectors = np.linalg.svd(centered, full_matrices=False)
+    projected = centered @ right_vectors[:components].T
+    variances = (singular_values ** 2) / max(values.shape[0] - 1, 1)
+    total_variance = variances.sum()
+    explained = (
+        variances[:components] / total_variance
+        if total_variance > 0
+        else np.zeros(components, dtype=float)
+    )
+    return {
+        'available': True,
+        'message': '',
+        'explained_variance_ratio': [round_or_none(value) for value in explained],
+        'points': [
+            [round_or_none(coordinate) for coordinate in point]
+            for point in projected[:, :components]
+        ],
+    }
