@@ -13,6 +13,7 @@ from Dashboard.models import (
     DashboardUser,
 )
 from Dashboard.services.statistics_clustering_service import build_clustering_analysis
+from Dashboard.services.statistics_service import build_correlations
 from Dashboard.services.statistics_utils import (
     deterministic_kmeans,
     descriptive_statistics,
@@ -50,6 +51,37 @@ class StatisticsUtilsTests(TestCase):
     def test_pearson_correlation_requires_variation(self):
         self.assertEqual(pearson_correlation([1, 2, 3], [2, 4, 6]), 1.0)
         self.assertIsNone(pearson_correlation([1, 1, 1], [2, 3, 4]))
+
+    def test_correlation_service_builds_symmetric_matrix_and_unavailable_sources(self):
+        result = build_correlations(
+            [
+                {
+                    'date': date(2026, 1, day),
+                    'spend': day * 10,
+                    'impressions': day * 100,
+                    'reach': day * 80,
+                    'clicks': day * 10,
+                    'results': day * 2,
+                }
+                for day in range(1, 5)
+            ]
+        )
+
+        self.assertTrue(result['available'])
+        self.assertEqual(result['sample_size'], 4)
+        self.assertEqual(len(result['metrics']), 10)
+        self.assertEqual(len(result['matrix']), 10)
+        matrix = {
+            row['metric']: {cell['metric']: cell['value'] for cell in row['cells']}
+            for row in result['matrix']
+        }
+        self.assertEqual(matrix['spend']['results'], 1.0)
+        self.assertEqual(matrix['results']['spend'], matrix['spend']['results'])
+        self.assertIsNone(matrix['cpc']['cpc'])
+        self.assertEqual(
+            {item['metric'] for item in result['unavailable_metrics']},
+            {'delivery', 'budget', 'video_3s_rate', 'messaging_conversion_rate'},
+        )
 
     def test_clustering_math_normalizes_groups_and_projects(self):
         normalized = standardize_matrix([[1, 10], [2, 20], [9, 90], [10, 100]])
@@ -190,6 +222,28 @@ class StatisticsAnalysisEndpointTests(TestCase):
         self.assertFalse(payload['segments']['available'])
         self.assertFalse(payload['cohorts']['available'])
         self.assertTrue(payload['executive_insights']['available'])
+
+    def test_analysis_returns_correlation_matrix_for_full_daily_sample(self):
+        response = self.client.get(
+            '/api/statistics/analysis',
+            {
+                'ad_account_id': 'act_stats',
+                'date_start': '2026-01-01',
+                'date_end': '2026-01-04',
+                'compare': 'false',
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        correlations = response.json()['correlations']
+        self.assertTrue(correlations['available'])
+        self.assertEqual(correlations['sample_size'], 4)
+        self.assertEqual(len(correlations['metrics']), 10)
+        self.assertEqual(len(correlations['matrix']), 10)
+        spend_row = next(row for row in correlations['matrix'] if row['metric'] == 'spend')
+        results_cell = next(cell for cell in spend_row['cells'] if cell['metric'] == 'results')
+        self.assertIsNotNone(results_cell['value'])
+        self.assertEqual(len(correlations['unavailable_metrics']), 4)
 
     def test_analysis_can_disable_previous_period_comparison(self):
         response = self.client.get(

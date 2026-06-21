@@ -18,12 +18,12 @@ from Dashboard.services.statistics_utils import (
 
 
 METRIC_CONFIG = {
-    'spend': {'label': 'Investimento', 'lower_is_better': False},
+    'spend': {'label': 'Valor usado', 'lower_is_better': False},
     'impressions': {'label': 'Impressões', 'lower_is_better': False},
     'reach': {'label': 'Alcance', 'lower_is_better': False},
-    'clicks': {'label': 'Cliques', 'lower_is_better': False},
-    'ctr': {'label': 'CTR', 'lower_is_better': False},
-    'cpc': {'label': 'CPC', 'lower_is_better': True},
+    'clicks': {'label': 'Cliques no link', 'lower_is_better': False},
+    'ctr': {'label': 'CTR (cliques no link)', 'lower_is_better': False},
+    'cpc': {'label': 'CPC (clique no link)', 'lower_is_better': True},
     'cpm': {'label': 'CPM', 'lower_is_better': True},
     'results': {'label': 'Resultados', 'lower_is_better': False},
     'cost_per_result': {'label': 'Custo por resultado', 'lower_is_better': True},
@@ -32,6 +32,40 @@ METRIC_CONFIG = {
 
 STABILITY_METRICS = ('spend', 'results', 'ctr', 'cpc', 'cost_per_result')
 TREND_METRICS = ('spend', 'results', 'ctr', 'cpc', 'cpm', 'cost_per_result')
+CORRELATION_METRICS = (
+    'spend',
+    'results',
+    'cost_per_result',
+    'cpc',
+    'ctr',
+    'cpm',
+    'reach',
+    'frequency',
+    'impressions',
+    'clicks',
+)
+CORRELATION_UNAVAILABLE_METRICS = (
+    {
+        'metric': 'delivery',
+        'label': 'Veiculação',
+        'reason': 'É uma variável categórica e não possui coeficiente de Pearson direto.',
+    },
+    {
+        'metric': 'budget',
+        'label': 'Orçamento',
+        'reason': 'O orçamento não está persistido como série diária na análise estatística.',
+    },
+    {
+        'metric': 'video_3s_rate',
+        'label': 'Taxa de reprodução do vídeo por 3 segundos',
+        'reason': 'As visualizações de vídeo por 3 segundos não estão persistidas diariamente.',
+    },
+    {
+        'metric': 'messaging_conversion_rate',
+        'label': 'Taxa de conversão de envio de mensagem',
+        'reason': 'Conversas iniciadas não estão persistidas diariamente e Resultados não é reinterpretado como mensagem.',
+    },
+)
 
 
 def _daily_metrics(row):
@@ -482,41 +516,79 @@ def build_trends(rows):
 
 def build_correlations(rows):
     daily_rows = _group_by_date(rows)
-    pairs = (
-        ('frequency', 'ctr'),
-        ('frequency', 'cost_per_result'),
-        ('cpm', 'cpc'),
-        ('ctr', 'cost_per_result'),
-        ('spend', 'results'),
-    )
+    metrics = [
+        {
+            'metric': metric,
+            'label': METRIC_CONFIG[metric]['label'],
+        }
+        for metric in CORRELATION_METRICS
+    ]
+    values_by_metric = {
+        metric: [row.get(metric) for row in daily_rows]
+        for metric in CORRELATION_METRICS
+    }
+    correlations = {}
     items = []
-    for metric_x, metric_y in pairs:
-        correlation = pearson_correlation(
-            [row.get(metric_x) for row in daily_rows],
-            [row.get(metric_y) for row in daily_rows],
-        )
-        if correlation is None:
-            continue
-        direction = 'positiva' if correlation > 0 else 'negativa' if correlation < 0 else 'neutra'
-        items.append(
-            {
-                'metric_x': metric_x,
-                'metric_x_label': METRIC_CONFIG[metric_x]['label'],
-                'metric_y': metric_y,
-                'metric_y_label': METRIC_CONFIG[metric_y]['label'],
-                'correlation': correlation,
-                'strength': correlation_strength(correlation),
-                'direction': direction,
-                'interpretation': (
-                    f'{METRIC_CONFIG[metric_x]["label"]} e {METRIC_CONFIG[metric_y]["label"]} '
-                    f'têm correlação {correlation_strength(correlation)} e {direction}.'
-                ),
-                'causality_warning': 'Correlação não implica causalidade.',
-            }
-        )
+    for row_index, metric_x in enumerate(CORRELATION_METRICS):
+        for column_index in range(row_index, len(CORRELATION_METRICS)):
+            metric_y = CORRELATION_METRICS[column_index]
+            correlation = pearson_correlation(
+                values_by_metric[metric_x],
+                values_by_metric[metric_y],
+            )
+            correlations[(metric_x, metric_y)] = correlation
+            correlations[(metric_y, metric_x)] = correlation
+            if metric_x == metric_y or correlation is None:
+                continue
+            direction = 'positiva' if correlation > 0 else 'negativa' if correlation < 0 else 'neutra'
+            items.append(
+                {
+                    'metric_x': metric_x,
+                    'metric_x_label': METRIC_CONFIG[metric_x]['label'],
+                    'metric_y': metric_y,
+                    'metric_y_label': METRIC_CONFIG[metric_y]['label'],
+                    'correlation': correlation,
+                    'strength': correlation_strength(correlation),
+                    'direction': direction,
+                    'interpretation': (
+                        f'{METRIC_CONFIG[metric_x]["label"]} e {METRIC_CONFIG[metric_y]["label"]} '
+                        f'têm correlação {correlation_strength(correlation)} e {direction}.'
+                    ),
+                    'causality_warning': 'Correlação não implica causalidade.',
+                }
+            )
+
+    matrix = [
+        {
+            'metric': metric_x,
+            'label': METRIC_CONFIG[metric_x]['label'],
+            'cells': [
+                {
+                    'metric': metric_y,
+                    'value': correlations.get((metric_x, metric_y)),
+                    'strength': correlation_strength(correlations.get((metric_x, metric_y))),
+                    'direction': (
+                        'positiva'
+                        if (correlations.get((metric_x, metric_y)) or 0) > 0
+                        else 'negativa'
+                        if (correlations.get((metric_x, metric_y)) or 0) < 0
+                        else 'neutra'
+                    ),
+                }
+                for metric_y in CORRELATION_METRICS
+            ],
+        }
+        for metric_x in CORRELATION_METRICS
+    ]
+
+    available = any(item['correlation'] is not None for item in items)
     return {
-        'available': bool(items),
-        'message': '' if items else 'Ainda não há dias suficientes ou variação para calcular correlações.',
+        'available': available,
+        'message': '' if available else 'Ainda não há dias suficientes ou variação para calcular correlações.',
+        'sample_size': len(daily_rows),
+        'metrics': metrics,
+        'matrix': matrix,
+        'unavailable_metrics': list(CORRELATION_UNAVAILABLE_METRICS),
         'items': items,
     }
 
