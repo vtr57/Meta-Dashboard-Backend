@@ -902,9 +902,7 @@ def _build_meta_specific_ad_queryset(dashboard_user: DashboardUser, filters: dic
     campaign_scope = context['campaign_scope']
     adset_scope = context['adset_scope']
 
-    qs = AdInsightDaily.objects.filter(
-        id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__in=ad_account_scope
-    ).filter(id_meta_ad__effective_status__iexact='active')
+    qs = AdInsightDaily.objects.filter(id_meta_ad__id_meta_adset__id_meta_campaign__id_meta_ad_account__in=ad_account_scope)
     level = 'ad_account'
 
     if filters['campaign_ids']:

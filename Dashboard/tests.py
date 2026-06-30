@@ -427,7 +427,7 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertAlmostEqual(kpis['cpc_medio'], 1.0, places=4)
         self.assertAlmostEqual(kpis['frequencia_media'], 2.0, places=4)
 
-    def test_meta_specific_insights_returns_only_active_ads_and_daily_results(self):
+    def test_meta_specific_insights_returns_all_ads_with_data_in_selected_period(self):
         params = {
             'ad_account_id': 'act_200',
             'date_start': '2026-01-01',
@@ -445,7 +445,7 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(
             timeseries_daily,
             [
-                {'date': '2026-01-01', 'spend': 5.0, 'results': 1},
+                {'date': '2026-01-01', 'spend': 104.0, 'results': 100},
                 {'date': '2026-01-02', 'spend': 12.0, 'results': 3},
             ],
         )
@@ -470,11 +470,18 @@ class MetaDashboardEndpointsTests(TestCase):
                         {'date': '2026-01-02', 'spend': 5.0, 'results': 0},
                     ],
                 },
+                {
+                    'ad_id': 'ad_202',
+                    'ad_name': 'Ad 202',
+                    'points': [
+                        {'date': '2026-01-01', 'spend': 99.0, 'results': 99},
+                    ],
+                },
             ],
         )
 
         rows_by_ad = payload['rows_by_ad']
-        self.assertEqual(len(rows_by_ad), 2)
+        self.assertEqual(len(rows_by_ad), 3)
         self.assertEqual(rows_by_ad[0]['ad_id'], 'ad_200')
         self.assertEqual(rows_by_ad[0]['ad_name'], 'Ad 200')
         self.assertEqual(rows_by_ad[0]['results'], 4)
@@ -484,7 +491,11 @@ class MetaDashboardEndpointsTests(TestCase):
         self.assertEqual(rows_by_ad[1]['results'], 0)
         self.assertEqual(rows_by_ad[1]['spend'], 7.0)
         self.assertIsNone(rows_by_ad[1]['cpr'])
-        self.assertTrue(all(row['ad_id'] != 'ad_202' for row in rows_by_ad))
+        self.assertEqual(rows_by_ad[2]['ad_id'], 'ad_202')
+        self.assertEqual(rows_by_ad[2]['ad_name'], 'Ad 202')
+        self.assertEqual(rows_by_ad[2]['results'], 99)
+        self.assertEqual(rows_by_ad[2]['spend'], 99.0)
+        self.assertAlmostEqual(rows_by_ad[2]['cpr'], 1.0, places=4)
 
     def test_meta_filters_accept_multiple_parent_ids(self):
         ad_account_secondary = AdAccount.objects.create(
